@@ -27,7 +27,7 @@ const maxDonationAliasLength = 64
 
 func NewRouter(deps Dependencies) http.Handler {
 	r := gin.New()
-	_ = r.SetTrustedProxies(nil)
+	_ = r.SetTrustedProxies([]string{"127.0.0.1", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"})
 	r.Use(gin.Logger(), gin.Recovery())
 
 	publicFS, _ := fs.Sub(deps.EmbeddedPublic, "public")
