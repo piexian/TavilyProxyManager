@@ -261,6 +261,39 @@
             </n-button>
           </n-space>
         </n-card>
+
+      </n-gi>
+    </n-grid>
+
+    <n-grid cols="1 m:2" :x-gap="16" :y-gap="16" responsive="screen">
+      <n-gi>
+        <n-card :title="t('settings.keyPool.title')" class="settings-card">
+          <template #header-extra>
+            <n-icon :component="SwapHorizontalOutline" size="20" />
+          </template>
+          <n-space vertical size="large">
+            <n-alert type="info" :show-icon="true" size="small">
+              {{ t("settings.keyPool.description") }}
+            </n-alert>
+            <n-form label-placement="top" size="medium">
+              <n-form-item :label="t('settings.keyPool.strategy')">
+                <n-radio-group v-model:value="keyPool.strategy" size="small">
+                  <n-radio-button value="best_remaining">{{ t("settings.keyPool.bestRemaining") }}</n-radio-button>
+                  <n-radio-button value="round_robin">{{ t("settings.keyPool.roundRobin") }}</n-radio-button>
+                  <n-radio-button value="sequential_fill">{{ t("settings.keyPool.sequentialFill") }}</n-radio-button>
+                </n-radio-group>
+              </n-form-item>
+            </n-form>
+            <n-button
+              type="primary"
+              block
+              :loading="savingKeyPool"
+              @click="saveKeyPool"
+            >
+              {{ t("settings.keyPool.save") }}
+            </n-button>
+          </n-space>
+        </n-card>
       </n-gi>
     </n-grid>
   </n-space>
@@ -281,6 +314,8 @@ import {
   NInputGroup,
   NInputNumber,
   NPopconfirm,
+  NRadioButton,
+  NRadioGroup,
   NSpace,
   NSwitch,
   useMessage,
@@ -290,6 +325,7 @@ import {
   LockClosedOutline,
   RefreshOutline,
   ServerOutline,
+  SwapHorizontalOutline,
   SyncOutline,
   TrashOutline,
 } from "@vicons/ionicons5";
@@ -322,6 +358,8 @@ const cacheStatsData = ref<{
   total_size_bytes: 0,
 });
 
+const savingKeyPool = ref(false);
+
 const autoSync = ref<{
   enabled: boolean;
   interval_minutes: number;
@@ -348,6 +386,12 @@ const logCleanup = ref<{
   retention_days: 30,
   last_run_at: null,
   last_error: "",
+});
+
+const keyPool = ref<{
+  strategy: string;
+}>({
+  strategy: "best_remaining",
 });
 
 function formatDate(dateStr: string) {
@@ -520,6 +564,34 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
 }
 
+async function loadKeyPool() {
+  try {
+    const { data } = await api.get<{ strategy: string }>(
+      "/api/settings/key-pool"
+    );
+    keyPool.value.strategy = data.strategy || "best_remaining";
+  } catch (err: any) {
+    message.error(
+      err?.response?.data?.error ?? t("settings.errors.loadKeyPool")
+    );
+  }
+}
+
+async function saveKeyPool() {
+  savingKeyPool.value = true;
+  try {
+    await api.put("/api/settings/key-pool", {
+      strategy: keyPool.value.strategy,
+    });
+    await loadKeyPool();
+    message.success(t("settings.messages.updated"));
+  } catch (err: any) {
+    message.error(err?.response?.data?.error ?? t("common.saveFailed"));
+  } finally {
+    savingKeyPool.value = false;
+  }
+}
+
 async function copy() {
   try {
     await writeClipboardText(masterKey.value);
@@ -547,6 +619,7 @@ onMounted(async () => {
   await loadAutoSync();
   await loadLogCleanup();
   await loadCache();
+  await loadKeyPool();
 });
 </script>
 
@@ -620,5 +693,13 @@ onMounted(async () => {
 
 .error-alert {
   margin-top: 8px;
+}
+
+@media (max-width: 640px) {
+  .sync-stat-item {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 4px;
+  }
 }
 </style>

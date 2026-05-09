@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,20 +21,27 @@ import (
 	"tavily-proxy/server/internal/util"
 )
 
+var donateKeyPattern = regexp.MustCompile(`^tvly-[A-Za-z0-9_-]{16,128}$`)
+
+const maxDonationAliasLength = 64
+
 func NewRouter(deps Dependencies) http.Handler {
 	r := gin.New()
+	_ = r.SetTrustedProxies(nil)
 	r.Use(gin.Logger(), gin.Recovery())
 
 	publicFS, _ := fs.Sub(deps.EmbeddedPublic, "public")
 
 	mcpHandler := mcpserver.NewHandler(mcpserver.Dependencies{
 		MasterKey:  deps.MasterKeyService,
+		AccessKeys: deps.AccessKeyService,
 		Proxy:      deps.TavilyProxy,
 		Stats:      deps.StatsService,
 		Stateless:  deps.Config.MCPStateless,
 		SessionTTL: deps.Config.MCPSessionTTL,
 	})
-	r.Any("/mcp", gin.WrapH(mcpHandler))
+	r.Any("/mcp", gin.WrapH(mcpHandler.Streamable))
+	r.Any("/sse/*path", gin.WrapH(mcpHandler.SSE))
 
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"ok": true})
@@ -78,6 +86,30 @@ func NewRouter(deps Dependencies) http.Handler {
 		api.PUT("/settings/cache", func(c *gin.Context) { handleSetCache(c, deps.SettingsService) })
 		api.DELETE("/cache", func(c *gin.Context) { handleClearCache(c, deps.CacheService) })
 		api.GET("/cache/stats", func(c *gin.Context) { handleCacheStats(c, deps.SettingsService, deps.CacheService) })
+		api.GET("/settings/key-pool", func(c *gin.Context) { handleGetKeyPool(c, deps.SettingsService) })
+		api.PUT("/settings/key-pool", func(c *gin.Context) { handleSetKeyPool(c, deps.SettingsService) })
+
+		api.GET("/access-keys", func(c *gin.Context) { handleListAccessKeys(c, deps.AccessKeyService) })
+		api.POST("/access-keys", func(c *gin.Context) { handleCreateAccessKey(c, deps.AccessKeyService) })
+		api.PUT("/access-keys/:id", func(c *gin.Context) { handleUpdateAccessKey(c, deps.AccessKeyService, c.Param("id")) })
+		api.DELETE("/access-keys/:id", func(c *gin.Context) { handleDeleteAccessKey(c, deps.AccessKeyService, c.Param("id")) })
+		api.GET("/access-keys/:id/raw", func(c *gin.Context) { handleGetAccessKeyRaw(c, deps.AccessKeyService, c.Param("id")) })
+	}
+
+	public := r.Group("/api/public")
+	{
+		public.GET("/stats", func(c *gin.Context) { handlePublicPoolStats(c, deps.KeyService) })
+	}
+
+	donateLimiter := NewRateLimiter(5.0/60.0, 5) // 5 req/min per IP
+	publicLimited := r.Group("/api/public")
+	publicLimited.Use(bodyLimitMiddleware(16 * 1024))
+	publicLimited.Use(donateLimiter.Middleware())
+	{
+		publicLimited.POST("/donate", func(c *gin.Context) {
+			handleDonateKeys(c, deps.KeyService, deps.TavilyProxy, deps.AccessKeyService)
+		})
+		publicLimited.POST("/donate/query", func(c *gin.Context) { handleQueryDonation(c, deps.KeyService) })
 	}
 
 	r.NoRoute(func(c *gin.Context) {
@@ -99,9 +131,18 @@ func NewRouter(deps Dependencies) http.Handler {
 
 		hasCredential := authHeaderToken != "" || apiKeyFromBody != "" || apiKeyFromQuery != ""
 		if deps.MasterKeyService.Authenticate(authHeaderToken) || deps.MasterKeyService.Authenticate(apiKeyFromBody) || deps.MasterKeyService.Authenticate(apiKeyFromQuery) {
-			handleProxy(c, deps.TavilyProxy, sanitizedBody, sanitizedQuery)
+			handleProxy(c, deps.TavilyProxy, sanitizedBody, sanitizedQuery, 0, "")
 			return
 		}
+
+		token := firstNonEmpty(authHeaderToken, apiKeyFromBody, apiKeyFromQuery)
+		if deps.AccessKeyService != nil {
+			if ak, ok := deps.AccessKeyService.Authenticate(token); ok {
+				handleProxy(c, deps.TavilyProxy, sanitizedBody, sanitizedQuery, ak.ID, ak.Alias)
+				return
+			}
+		}
+
 		if hasCredential {
 			respondUnauthorized(c)
 			return
@@ -135,6 +176,29 @@ func masterAuthMiddleware(master *services.MasterKeyService) gin.HandlerFunc {
 
 func respondUnauthorized(c *gin.Context) {
 	c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+}
+
+func bodyLimitMiddleware(maxBytes int64) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if maxBytes <= 0 || c.Request == nil || c.Request.Body == nil {
+			c.Next()
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(c.Request.Body, maxBytes+1))
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body"})
+			c.Abort()
+			return
+		}
+		if int64(len(body)) > maxBytes {
+			c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "payload_too_large"})
+			c.Abort()
+			return
+		}
+		c.Request.Body = io.NopCloser(bytes.NewReader(body))
+		c.Request.ContentLength = int64(len(body))
+		c.Next()
+	}
 }
 
 func parseBearerToken(authHeader string) string {
@@ -241,6 +305,7 @@ func handleListKeys(c *gin.Context, keys *services.KeyService) {
 		UsedQuota  int     `json:"used_quota"`
 		IsActive   bool    `json:"is_active"`
 		IsInvalid  bool    `json:"is_invalid"`
+		IsDonated  bool    `json:"is_donated"`
 		LastUsedAt *string `json:"last_used_at"`
 		CreatedAt  string  `json:"created_at"`
 	}
@@ -260,6 +325,7 @@ func handleListKeys(c *gin.Context, keys *services.KeyService) {
 			UsedQuota:  k.UsedQuota,
 			IsActive:   k.IsActive,
 			IsInvalid:  k.IsInvalid,
+			IsDonated:  k.IsDonated,
 			LastUsedAt: lastUsed,
 			CreatedAt:  k.CreatedAt.Format(time.RFC3339),
 		})
@@ -317,27 +383,179 @@ func handleCreateKey(c *gin.Context, keys *services.KeyService) {
 		return
 	}
 
-	alias := strings.TrimSpace(body.Alias)
-	if alias == "" {
-		alias = "Default"
-	}
-
-	created, err := keys.Create(c.Request.Context(), key, alias, body.TotalQuota)
+	record, _, err := keys.CreateOrUpdate(c.Request.Context(), strings.TrimSpace(body.Key), strings.TrimSpace(body.Alias), body.TotalQuota)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "create_failed"})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"item": gin.H{
-			"id":          created.ID,
-			"key":         util.MaskAPIKey(created.Key),
-			"alias":       created.Alias,
-			"total_quota": created.TotalQuota,
-			"used_quota":  created.UsedQuota,
-			"is_active":   created.IsActive,
-			"is_invalid":  created.IsInvalid,
-			"created_at":  created.CreatedAt.Format(time.RFC3339),
+			"id":          record.ID,
+			"key":         util.MaskAPIKey(record.Key),
+			"alias":       record.Alias,
+			"total_quota": record.TotalQuota,
+			"used_quota":  record.UsedQuota,
+			"is_active":   record.IsActive,
+			"is_invalid":  record.IsInvalid,
+			"created_at":  record.CreatedAt.Format(time.RFC3339),
 		},
+	})
+}
+
+func handleDonateKeys(c *gin.Context, keys *services.KeyService, proxy *services.TavilyProxy, accessKeys *services.AccessKeyService) {
+	var body struct {
+		Keys  []string `json:"keys"`
+		Alias string   `json:"alias"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
+		return
+	}
+
+	alias := strings.TrimSpace(body.Alias)
+	if alias == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing_alias"})
+		return
+	}
+	if len(alias) > maxDonationAliasLength {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "alias_too_long"})
+		return
+	}
+	if len(body.Keys) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing_keys"})
+		return
+	}
+	if len(body.Keys) > 20 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "too_many_keys"})
+		return
+	}
+
+	type donationItem struct {
+		KeyMasked string `json:"key_masked"`
+		Alias     string `json:"alias"`
+		Status    string `json:"status"` // created, duplicated, invalid, invalid_key
+	}
+
+	ctx := c.Request.Context()
+	items := make([]donationItem, 0, len(body.Keys))
+	var created, duplicated, invalid, activated int
+
+	for _, raw := range body.Keys {
+		key := strings.TrimSpace(raw)
+		if !donateKeyPattern.MatchString(key) {
+			invalid++
+			items = append(items, donationItem{
+				KeyMasked: util.MaskAPIKey(key),
+				Alias:     alias,
+				Status:    "invalid",
+			})
+			continue
+		}
+
+		record, isCreated, err := keys.DonateKey(ctx, key, alias)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "create_failed"})
+			return
+		}
+
+		if !isCreated {
+			duplicated++
+			items = append(items, donationItem{
+				KeyMasked: util.MaskAPIKey(key),
+				Alias:     alias,
+				Status:    "duplicated",
+			})
+			continue
+		}
+
+		// Auto-test: validate the key against Tavily /usage
+		usage, limit, testErr := proxy.GetUsage(ctx, key)
+		if testErr != nil {
+			// Key is invalid - mark it
+			_ = keys.MarkInvalid(ctx, record.ID)
+			invalid++
+			items = append(items, donationItem{
+				KeyMasked: util.MaskAPIKey(key),
+				Alias:     alias,
+				Status:    "invalid_key",
+			})
+			continue
+		}
+
+		// Key is valid - activate and update quota
+		totalQuota := 1000
+		if limit != nil && *limit > 0 {
+			totalQuota = *limit
+		}
+		_ = keys.SetUsage(ctx, record.ID, usage, &totalQuota)
+		_ = keys.ActivateKey(ctx, record.ID)
+		created++
+		activated++
+		items = append(items, donationItem{
+			KeyMasked: util.MaskAPIKey(key),
+			Alias:     alias,
+			Status:    "created",
+		})
+	}
+
+	resp := gin.H{
+		"total":      len(body.Keys),
+		"created":    created,
+		"duplicated": duplicated,
+		"invalid":    invalid,
+		"activated":  activated,
+		"items":      items,
+	}
+
+	// Generate an access key for the donor if any keys were activated
+	if activated > 0 && accessKeys != nil {
+		// Reuse existing access key for the same alias; create only if none exists.
+		existing, _ := accessKeys.FindByAlias(ctx, alias)
+		if existing != nil {
+			resp["access_key"] = existing.Key
+			resp["access_key_alias"] = existing.Alias
+		} else {
+			ak, err := accessKeys.Create(ctx, alias)
+			if err == nil {
+				resp["access_key"] = ak.Key
+				resp["access_key_alias"] = ak.Alias
+			}
+		}
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+func handleQueryDonation(c *gin.Context, keys *services.KeyService) {
+	var body struct {
+		Key string `json:"key"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
+		return
+	}
+
+	key := strings.TrimSpace(body.Key)
+	if !donateKeyPattern.MatchString(key) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_key"})
+		return
+	}
+
+	record, err := keys.QueryByKey(c.Request.Context(), key)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+	if record == nil {
+		c.JSON(http.StatusOK, gin.H{"found": false})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"found":      true,
+		"alias":      record.Alias,
+		"is_active":  record.IsActive,
+		"donated_at": record.CreatedAt.Format(time.RFC3339),
 	})
 }
 
@@ -606,6 +824,48 @@ func handleSetLogCleanup(c *gin.Context, settings *services.SettingsService) {
 	c.Status(http.StatusNoContent)
 }
 
+func handleGetKeyPool(c *gin.Context, settings *services.SettingsService) {
+	strategy, _, err := settings.Get(c.Request.Context(), services.SettingKeyPoolStrategy)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+	if strategy == "" {
+		strategy = services.StrategyBestRemaining
+	}
+	c.JSON(http.StatusOK, gin.H{"strategy": strategy})
+}
+
+func handleSetKeyPool(c *gin.Context, settings *services.SettingsService) {
+	var body struct {
+		Strategy *string `json:"strategy"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
+		return
+	}
+	if body.Strategy == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing_fields"})
+		return
+	}
+
+	valid := map[string]bool{
+		services.StrategyBestRemaining:  true,
+		services.StrategyRoundRobin:     true,
+		services.StrategySequentialFill: true,
+	}
+	if !valid[*body.Strategy] {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_strategy"})
+		return
+	}
+
+	if err := settings.Set(c.Request.Context(), services.SettingKeyPoolStrategy, *body.Strategy); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+	c.Status(http.StatusNoContent)
+}
+
 func handleDeleteKey(c *gin.Context, keys *services.KeyService, idStr string) {
 	id, err := parseUintParam(idStr)
 	if err != nil {
@@ -633,7 +893,18 @@ func handleListLogs(c *gin.Context, logs *services.LogService) {
 		statusCode = &parsed
 	}
 
-	out, err := logs.List(c.Request.Context(), page, size, statusCode)
+	var accessKeyID *uint
+	if v := c.Query("access_key_id"); v != "" {
+		parsed, err := strconv.ParseUint(v, 10, 64)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_access_key_id"})
+			return
+		}
+		id := uint(parsed)
+		accessKeyID = &id
+	}
+
+	out, err := logs.List(c.Request.Context(), page, size, statusCode, accessKeyID)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
 		return
@@ -668,6 +939,15 @@ func handleStats(c *gin.Context, stats *services.StatsService) {
 	c.JSON(http.StatusOK, out)
 }
 
+func handlePublicPoolStats(c *gin.Context, keys *services.KeyService) {
+	out, err := keys.PoolQuotaSummary(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
 func handleTimeSeries(c *gin.Context, stats *services.StatsService) {
 	granularity := c.Query("granularity")
 	out, err := stats.TimeSeries(c.Request.Context(), granularity)
@@ -678,15 +958,17 @@ func handleTimeSeries(c *gin.Context, stats *services.StatsService) {
 	c.JSON(http.StatusOK, out)
 }
 
-func handleProxy(c *gin.Context, proxy *services.TavilyProxy, body []byte, rawQuery string) {
+func handleProxy(c *gin.Context, proxy *services.TavilyProxy, body []byte, rawQuery string, accessKeyID uint, accessKeyAlias string) {
 	resp, err := proxy.Do(c.Request.Context(), services.ProxyRequest{
-		Method:      c.Request.Method,
-		Path:        c.Request.URL.Path,
-		RawQuery:    rawQuery,
-		Headers:     c.Request.Header.Clone(),
-		Body:        body,
-		ClientIP:    c.ClientIP(),
-		ContentType: c.GetHeader("Content-Type"),
+		Method:         c.Request.Method,
+		Path:           c.Request.URL.Path,
+		RawQuery:       rawQuery,
+		Headers:        c.Request.Header.Clone(),
+		Body:           body,
+		ClientIP:       c.ClientIP(),
+		ContentType:    c.GetHeader("Content-Type"),
+		AccessKeyID:    accessKeyID,
+		AccessKeyAlias: accessKeyAlias,
 	})
 	if err != nil {
 		if errors.Is(err, services.ErrNoAvailableKeys) {
@@ -860,4 +1142,128 @@ func handleCacheStats(c *gin.Context, settings *services.SettingsService, cache 
 
 func parseUintParam(v string) (uint64, error) {
 	return strconv.ParseUint(v, 10, 64)
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, v := range values {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func handleListAccessKeys(c *gin.Context, svc *services.AccessKeyService) {
+	items, err := svc.List(c.Request.Context())
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+
+	type dto struct {
+		ID         uint    `json:"id"`
+		KeyMasked  string  `json:"key"`
+		Alias      string  `json:"alias"`
+		IsActive   bool    `json:"is_active"`
+		LastUsedAt *string `json:"last_used_at"`
+		CreatedAt  string  `json:"created_at"`
+	}
+	out := make([]dto, 0, len(items))
+	for _, k := range items {
+		var lastUsed *string
+		if k.LastUsedAt != nil {
+			v := k.LastUsedAt.Format(time.RFC3339)
+			lastUsed = &v
+		}
+		out = append(out, dto{
+			ID:         k.ID,
+			KeyMasked:  util.MaskAPIKey(k.Key),
+			Alias:      k.Alias,
+			IsActive:   k.IsActive,
+			LastUsedAt: lastUsed,
+			CreatedAt:  k.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"items": out})
+}
+
+func handleCreateAccessKey(c *gin.Context, svc *services.AccessKeyService) {
+	var body struct {
+		Alias string `json:"alias"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
+		return
+	}
+	if strings.TrimSpace(body.Alias) == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing_alias"})
+		return
+	}
+	created, err := svc.Create(c.Request.Context(), strings.TrimSpace(body.Alias))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "create_failed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"item": gin.H{
+			"id":         created.ID,
+			"key":        created.Key,
+			"alias":      created.Alias,
+			"is_active":  created.IsActive,
+			"created_at": created.CreatedAt.Format(time.RFC3339),
+		},
+	})
+}
+
+func handleUpdateAccessKey(c *gin.Context, svc *services.AccessKeyService, idStr string) {
+	id, err := parseUintParam(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_id"})
+		return
+	}
+	var body services.AccessKeyUpdate
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
+		return
+	}
+	updated, err := svc.Update(c.Request.Context(), uint(id), body)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "update_failed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"item": gin.H{
+			"id":        updated.ID,
+			"key":       util.MaskAPIKey(updated.Key),
+			"alias":     updated.Alias,
+			"is_active": updated.IsActive,
+		},
+	})
+}
+
+func handleDeleteAccessKey(c *gin.Context, svc *services.AccessKeyService, idStr string) {
+	id, err := parseUintParam(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_id"})
+		return
+	}
+	if err := svc.Delete(c.Request.Context(), uint(id)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "delete_failed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+func handleGetAccessKeyRaw(c *gin.Context, svc *services.AccessKeyService, idStr string) {
+	id, err := parseUintParam(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_id"})
+		return
+	}
+	raw, err := svc.GetRawKey(c.Request.Context(), uint(id))
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"key": raw})
 }

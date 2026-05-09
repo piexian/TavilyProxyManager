@@ -17,4 +17,6 @@ const (
 
 	SettingCacheEnabled    = "cache_enabled"
 	SettingCacheTTLSeconds = "cache_ttl_seconds"
+
+	SettingKeyPoolStrategy = "key_pool_strategy"
 )

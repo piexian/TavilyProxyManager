@@ -77,7 +77,7 @@ func TestTavilyUsage_ReturnsAggregatedStatsWithoutUpstreamCall(t *testing.T) {
 		Stateless:  true,
 		SessionTTL: time.Minute,
 	})
-	server := httptest.NewServer(handler)
+	server := httptest.NewServer(handler.Streamable)
 	t.Cleanup(server.Close)
 
 	session := connectMCPClient(t, server.URL, master.Get())
@@ -145,7 +145,7 @@ func TestTavilyUsage_ReturnsErrorWhenStatsUnavailable(t *testing.T) {
 		Stateless:  true,
 		SessionTTL: time.Minute,
 	})
-	server := httptest.NewServer(handler)
+	server := httptest.NewServer(handler.Streamable)
 	t.Cleanup(server.Close)
 
 	session := connectMCPClient(t, server.URL, master.Get())
@@ -196,7 +196,7 @@ func TestMCPHandler_RejectsUnauthorizedRequest(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
 	w := httptest.NewRecorder()
-	handler.ServeHTTP(w, req)
+	handler.Streamable.ServeHTTP(w, req)
 
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("unexpected status: got %d want %d", w.Code, http.StatusUnauthorized)

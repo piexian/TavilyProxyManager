@@ -31,13 +31,15 @@ type TavilyProxy struct {
 }
 
 type ProxyRequest struct {
-	Method      string
-	Path        string
-	RawQuery    string
-	Headers     http.Header
-	Body        []byte
-	ClientIP    string
-	ContentType string
+	Method         string
+	Path           string
+	RawQuery       string
+	Headers        http.Header
+	Body           []byte
+	ClientIP       string
+	ContentType    string
+	AccessKeyID    uint
+	AccessKeyAlias string
 }
 
 type ProxyResponse struct {
@@ -103,6 +105,11 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 	requestBody, requestTruncated := "", false
 	if loggingEnabled && captureBodies && len(req.Body) > 0 {
 		requestBody, requestTruncated = truncateForLog(req.Body, maxLogBytes)
+	}
+
+	// Pool usage summary request
+	if isPoolUsageSummaryRequest(req) {
+		return p.poolUsageSummaryResponse(ctx, req, proxyReqID, loggingEnabled)
 	}
 
 	// Cache lookup for POST /search
@@ -175,6 +182,8 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 					ResponseBody:      `{"error":"no_available_keys","message":"No active Tavily API keys with remaining quota."}`,
 					ResponseTruncated: false,
 					ClientIP:          req.ClientIP,
+					AccessKeyID:       req.AccessKeyID,
+					AccessKeyAlias:    req.AccessKeyAlias,
 					CreatedAt:         createdAt,
 				})
 			}
@@ -260,18 +269,22 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 					ResponseBody:      responseBody,
 					ResponseTruncated: responseTruncated,
 					ClientIP:          req.ClientIP,
+					AccessKeyID:       req.AccessKeyID,
+					AccessKeyAlias:    req.AccessKeyAlias,
 					CreatedAt:         createdAt,
 				})
 			} else {
 				_ = p.logs.Create(ctx, &models.RequestLog{
-					RequestID:  proxyReqID,
-					KeyUsed:    key.ID,
-					KeyAlias:   key.Alias,
-					Endpoint:   req.Path,
-					StatusCode: status,
-					LatencyMs:  latencyMs,
-					ClientIP:   req.ClientIP,
-					CreatedAt:  createdAt,
+					RequestID:      proxyReqID,
+					KeyUsed:        key.ID,
+					KeyAlias:       key.Alias,
+					Endpoint:       req.Path,
+					StatusCode:     status,
+					LatencyMs:      latencyMs,
+					ClientIP:       req.ClientIP,
+					AccessKeyID:    req.AccessKeyID,
+					AccessKeyAlias: req.AccessKeyAlias,
+					CreatedAt:      createdAt,
 				})
 			}
 		}
@@ -363,6 +376,8 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 				ResponseBody:      lastErr.Error(),
 				ResponseTruncated: false,
 				ClientIP:          req.ClientIP,
+				AccessKeyID:       req.AccessKeyID,
+				AccessKeyAlias:    req.AccessKeyAlias,
 				CreatedAt:         createdAt,
 			})
 		}
@@ -377,6 +392,67 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 	}
 
 	return ProxyResponse{}, ErrNoAvailableKeys
+}
+
+func isPoolUsageSummaryRequest(req ProxyRequest) bool {
+	return strings.EqualFold(req.Method, http.MethodGet) && req.Path == "/usage"
+}
+
+func (p *TavilyProxy) poolUsageSummaryResponse(ctx context.Context, req ProxyRequest, proxyReqID string, loggingEnabled bool) (ProxyResponse, error) {
+	summary, err := p.keys.PoolQuotaSummary(ctx)
+	if err != nil {
+		return ProxyResponse{}, err
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"key": map[string]any{
+			"usage":     summary.TotalUsed,
+			"limit":     summary.TotalQuota,
+			"remaining": summary.TotalRemaining,
+		},
+		"account": map[string]any{
+			"plan_usage":     summary.TotalUsed,
+			"plan_limit":     summary.TotalQuota,
+			"plan_remaining": summary.TotalRemaining,
+		},
+		"pool": map[string]any{
+			"total_quota":      summary.TotalQuota,
+			"total_used":       summary.TotalUsed,
+			"total_remaining":  summary.TotalRemaining,
+			"active_key_count": summary.ActiveKeyCount,
+		},
+	})
+	if err != nil {
+		return ProxyResponse{}, err
+	}
+
+	createdAt := time.Now()
+	if loggingEnabled {
+		_ = p.logs.Create(ctx, &models.RequestLog{
+			RequestID:      proxyReqID,
+			KeyUsed:        0,
+			KeyAlias:       "pool",
+			Endpoint:       req.Path,
+			StatusCode:     http.StatusOK,
+			LatencyMs:      0,
+			ClientIP:       req.ClientIP,
+			AccessKeyID:    req.AccessKeyID,
+			AccessKeyAlias: req.AccessKeyAlias,
+			CreatedAt:      createdAt,
+		})
+	}
+	if p.stats != nil {
+		_ = p.stats.RecordRequest(ctx, req.Path, createdAt)
+	}
+
+	return ProxyResponse{
+		StatusCode: http.StatusOK,
+		Headers: http.Header{
+			"Content-Type": []string{"application/json; charset=utf-8"},
+		},
+		Body:           body,
+		ProxyRequestID: proxyReqID,
+	}, nil
 }
 
 func truncateForLog(data []byte, maxBytes int) (string, bool) {
@@ -486,7 +562,8 @@ type usageResponse struct {
 		Usage int  `json:"usage"`
 		Limit *int `json:"limit"`
 	} `json:"key"`
-	Account struct {
+	Account *struct {
+		PlanUsage int  `json:"plan_usage"`
 		PlanLimit *int `json:"plan_limit"`
 	} `json:"account"`
 }
@@ -553,9 +630,17 @@ func (p *TavilyProxy) GetUsage(ctx context.Context, tavilyKey string) (int, *int
 		return 0, nil, err
 	}
 
-	limit := out.Key.Limit
-	if limit == nil {
-		limit = out.Account.PlanLimit
+	// Prefer account-level stats (new Tavily API) over key-level stats.
+	if out.Account != nil {
+		usage := out.Account.PlanUsage
+		limit := out.Account.PlanLimit
+		if usage == 0 && out.Key.Usage > 0 {
+			usage = out.Key.Usage
+		}
+		if (limit == nil || *limit == 0) && out.Key.Limit != nil && *out.Key.Limit > 0 {
+			limit = out.Key.Limit
+		}
+		return usage, limit, nil
 	}
-	return out.Key.Usage, limit, nil
+	return out.Key.Usage, out.Key.Limit, nil
 }

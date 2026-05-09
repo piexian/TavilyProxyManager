@@ -7,6 +7,13 @@ export type Stats = {
   today_requests: number
 }
 
+export type PoolStats = {
+  total_quota: number
+  total_used: number
+  total_remaining: number
+  active_key_count: number
+}
+
 export type TimeSeries = {
   granularity: string
   labels: string[]
@@ -21,6 +28,7 @@ export type KeyItem = {
   used_quota: number
   is_active: boolean
   is_invalid: boolean
+  is_donated: boolean
   last_used_at?: string | null
   created_at?: string
 }
@@ -39,7 +47,18 @@ export type LogItem = {
   response_truncated?: boolean
   cache_hit?: boolean
   client_ip: string
+  access_key_id: number
+  access_key_alias: string
   created_at: string
+}
+
+export type AccessKeyItem = {
+  id: number
+  key: string
+  alias: string
+  is_active: boolean
+  last_used_at?: string | null
+  created_at?: string
 }
 
 export type LogStatusCount = {

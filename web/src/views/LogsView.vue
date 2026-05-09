@@ -77,7 +77,7 @@
           <n-descriptions
             bordered
             label-placement="left"
-            :column="2"
+            :column="detailColumns"
             size="small"
           >
             <n-descriptions-item :label="t('logs.detail.endpoint')">
@@ -108,6 +108,9 @@
             </n-descriptions-item>
             <n-descriptions-item :label="t('logs.detail.keyUsed')" :span="2">
               {{ selected?.key_alias || "-" }}
+            </n-descriptions-item>
+            <n-descriptions-item :label="t('logs.detail.accessKey')" :span="2">
+              {{ selected?.access_key_alias || "-" }}
             </n-descriptions-item>
           </n-descriptions>
         </div>
@@ -168,7 +171,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, ref, watch } from "vue";
+import { computed, h, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
   NButton,
   NCard,
@@ -214,6 +217,7 @@ const statusCounts = ref<LogStatusCount[]>([]);
 const statusLoading = ref(false);
 const showDetail = ref(false);
 const selected = ref<LogItem | null>(null);
+const detailColumns = ref(2);
 
 const statusOptions = computed<SelectOption[]>(() => [
   { label: t("logs.filter.allStatusCodes"), value: "all" },
@@ -345,6 +349,18 @@ watch(statusCode, () => {
   }
 });
 onMounted(refresh);
+function syncDetailColumns() {
+  detailColumns.value = window.innerWidth <= 640 ? 1 : 2;
+}
+
+onMounted(() => {
+  syncDetailColumns();
+  window.addEventListener("resize", syncDetailColumns);
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener("resize", syncDetailColumns);
+});
 
 function openDetail(row: LogItem) {
   selected.value = row;
@@ -370,6 +386,12 @@ const columns: DataTableColumns<LogItem> = [
     key: "key_alias",
     width: 150,
     render: (r) => h("div", { class: "alias-cell" }, r.key_alias || "-"),
+  },
+  {
+    title: () => t("logs.table.accessKey"),
+    key: "access_key_alias",
+    width: 150,
+    render: (r) => h("div", { class: "alias-cell" }, r.access_key_alias || "-"),
   },
   {
     title: () => t("logs.table.endpoint"),
@@ -550,5 +572,20 @@ const columns: DataTableColumns<LogItem> = [
   font-size: 13px;
   line-height: 1.5;
   background-color: rgba(0, 0, 0, 0.02);
+}
+
+@media (max-width: 640px) {
+  .log-detail-modal {
+    width: calc(100vw - 24px);
+  }
+
+  .copy-btn {
+    top: 6px;
+    right: 6px;
+  }
+
+  .json-textarea :deep(textarea) {
+    font-size: 12px;
+  }
 }
 </style>

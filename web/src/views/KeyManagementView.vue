@@ -96,6 +96,7 @@
         :loading="loading"
         :row-key="rowKey"
         :pagination="pagination"
+        scroll-x="1150"
         size="small"
       />
     </n-card>
@@ -149,7 +150,7 @@
         <n-input
           v-model:value="batchText"
           type="textarea"
-          placeholder="tvly-...\ntvly-..."
+          :placeholder="'alias----tvly-...\ntvly-...'"
           :autosize="{ minRows: 6, maxRows: 12 }"
         />
         <n-alert
@@ -202,7 +203,7 @@
         <n-form-item :label="t('keys.editModal.alias')">
           <n-input v-model:value="editForm.alias" />
         </n-form-item>
-        <n-grid :cols="2" :x-gap="12">
+        <n-grid cols="1 s:2" responsive="screen" :x-gap="12">
           <n-form-item-gi :label="t('keys.editModal.totalQuota')">
             <n-input-number
               v-model:value="editForm.total_quota"
@@ -511,6 +512,7 @@ function parseBatchKeys(input: string): { key: string; alias: string }[] {
     }
 
     if (!key.startsWith("tvly-")) continue;
+
     if (seen.has(key)) continue;
     seen.add(key);
     out.push({ key, alias });
@@ -519,8 +521,8 @@ function parseBatchKeys(input: string): { key: string; alias: string }[] {
 }
 
 async function createBatchKeys() {
-  const keys = parseBatchKeys(batchText.value);
-  if (keys.length === 0) {
+  const entries = parseBatchKeys(batchText.value);
+  if (entries.length === 0) {
     message.error(t("keys.errors.needAtLeastOneKey"));
     return;
   }
@@ -529,13 +531,15 @@ async function createBatchKeys() {
   batchFailures.value = [];
 
   let succeeded = 0;
-  for (const item of keys) {
+  for (const entry of entries) {
     try {
-      await api.post("/api/keys", { key: item.key, alias: item.alias || undefined });
+      const payload: Record<string, string> = { key: entry.key };
+      if (entry.alias) payload.alias = entry.alias;
+      await api.post("/api/keys", payload);
       succeeded++;
     } catch (err: any) {
       batchFailures.value.push({
-        key: item.key,
+        key: entry.alias ? `${entry.alias} (${entry.key})` : entry.key,
         error: err?.response?.data?.error ?? t("common.createFailed"),
       });
     }
@@ -554,7 +558,7 @@ async function createBatchKeys() {
   message.warning(
     t("keys.messages.addedPartial", {
       succeeded,
-      total: keys.length,
+      total: entries.length,
       failed: batchFailures.value.length,
     })
   );
@@ -699,7 +703,19 @@ const columns: DataTableColumns<KeyItem> = [
     title: () => t("keys.table.alias"),
     key: "alias",
     width: 150,
-    render: (row) => h("div", { class: "alias-cell" }, row.alias),
+    render: (row) =>
+      h("div", { class: "alias-cell" }, [
+        row.alias,
+        ...(row.is_donated
+          ? [
+              h(
+                NTag,
+                { size: "tiny", type: "info", round: true, bordered: false, style: "margin-left: 6px" },
+                { default: () => t("keys.status.donated") }
+              ),
+            ]
+          : []),
+      ]),
   },
   {
     title: () => t("keys.table.key"),
@@ -983,5 +999,24 @@ onBeforeUnmount(stopSyncJobPolling);
 
 :deep(.n-data-table-td) {
   padding: 12px 16px;
+}
+
+@media (max-width: 640px) {
+  .custom-modal {
+    width: calc(100vw - 24px);
+  }
+
+  .quota-info {
+    gap: 8px;
+  }
+
+  .quota-text {
+    font-size: 12px;
+  }
+
+  :deep(.n-data-table-th),
+  :deep(.n-data-table-td) {
+    padding: 10px 12px;
+  }
 }
 </style>

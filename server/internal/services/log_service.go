@@ -35,7 +35,7 @@ type StatusCodeCount struct {
 	Count      int64 `json:"count"`
 }
 
-func (s *LogService) List(ctx context.Context, page, size int, statusCode *int) (PaginatedLogs, error) {
+func (s *LogService) List(ctx context.Context, page, size int, statusCode *int, accessKeyID *uint) (PaginatedLogs, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -47,6 +47,9 @@ func (s *LogService) List(ctx context.Context, page, size int, statusCode *int) 
 	base := s.db.WithContext(ctx).Model(&models.RequestLog{})
 	if statusCode != nil {
 		base = base.Where("status_code = ?", *statusCode)
+	}
+	if accessKeyID != nil {
+		base = base.Where("access_key_id = ?", *accessKeyID)
 	}
 
 	var total int64
@@ -62,6 +65,9 @@ func (s *LogService) List(ctx context.Context, page, size int, statusCode *int) 
 		Offset(offset)
 	if statusCode != nil {
 		query = query.Where("status_code = ?", *statusCode)
+	}
+	if accessKeyID != nil {
+		query = query.Where("access_key_id = ?", *accessKeyID)
 	}
 	if err := query.Find(&logs).Error; err != nil {
 		return PaginatedLogs{}, err

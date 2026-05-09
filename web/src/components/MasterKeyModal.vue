@@ -57,6 +57,16 @@
         {{ t("auth.accessDashboard") }}
       </n-button>
 
+      <n-button
+        v-if="cancelable"
+        size="large"
+        block
+        quaternary
+        @click="emit('cancel')"
+      >
+        {{ t("common.cancel") }}
+      </n-button>
+
       <div class="auth-footer">
         {{ t("auth.footer") }}
       </div>
@@ -83,10 +93,12 @@ const props = defineProps<{
   show: boolean;
   initialValue?: string;
   error?: string;
+  cancelable?: boolean;
 }>();
 
 const emit = defineEmits<{
   (e: "submit", value: string): void;
+  (e: "cancel"): void;
 }>();
 
 const value = ref(props.initialValue ?? "");

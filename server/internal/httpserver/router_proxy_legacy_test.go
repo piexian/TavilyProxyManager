@@ -145,29 +145,11 @@ func TestProxy_LegacyBodyAPIKey_MasterKey_StripsFieldAndUsesPoolKey(t *testing.T
 	}
 }
 
-func TestProxy_LegacyQueryAPIKey_MasterKey_StripsParamAndUsesPoolKey(t *testing.T) {
+func TestProxy_LegacyQueryAPIKey_MasterKey_ReturnsPoolUsageSummary(t *testing.T) {
 	t.Parallel()
 
 	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-
-	const poolKey = "tvly-pool-1234567890abcdef"
-
-	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer "+poolKey {
-			t.Fatalf("unexpected Authorization header: got %q want %q", got, "Bearer "+poolKey)
-		}
-		if got := r.URL.Query().Get("api_key"); got != "" {
-			t.Fatalf("api_key should be stripped from upstream query, got %q", got)
-		}
-		if got := r.URL.Query().Get("foo"); got != "bar" {
-			t.Fatalf("unexpected foo query: got %q want %q", got, "bar")
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"key":{"usage":0,"limit":1000}}`))
-	}))
-	t.Cleanup(upstream.Close)
 
 	database, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
 	if err != nil {
@@ -186,10 +168,31 @@ func TestProxy_LegacyQueryAPIKey_MasterKey_StripsParamAndUsesPoolKey(t *testing.
 	}
 
 	keys := services.NewKeyService(database, logger)
-	if _, err := keys.Create(ctx, poolKey, "pool", 1000); err != nil {
-		t.Fatalf("create key: %v", err)
+	first, err := keys.Create(ctx, "tvly-pool-a", "pool-a", 1000)
+	if err != nil {
+		t.Fatalf("create first key: %v", err)
 	}
-	proxy := services.NewTavilyProxy(upstream.URL, 5*time.Second, keys, nil, nil, logger)
+	if err := keys.SetUsage(ctx, first.ID, 250, nil); err != nil {
+		t.Fatalf("set first key usage: %v", err)
+	}
+
+	second, err := keys.Create(ctx, "tvly-pool-b", "pool-b", 500)
+	if err != nil {
+		t.Fatalf("create second key: %v", err)
+	}
+	if err := keys.SetUsage(ctx, second.ID, 100, nil); err != nil {
+		t.Fatalf("set second key usage: %v", err)
+	}
+
+	invalid, err := keys.Create(ctx, "tvly-invalid", "invalid", 999)
+	if err != nil {
+		t.Fatalf("create invalid key: %v", err)
+	}
+	if err := keys.MarkInvalid(ctx, invalid.ID); err != nil {
+		t.Fatalf("mark invalid key: %v", err)
+	}
+
+	proxy := services.NewTavilyProxy("http://127.0.0.1:1", 200*time.Millisecond, keys, nil, nil, logger)
 
 	router := NewRouter(Dependencies{
 		MasterKeyService: master,
@@ -204,5 +207,124 @@ func TestProxy_LegacyQueryAPIKey_MasterKey_StripsParamAndUsesPoolKey(t *testing.
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("unexpected status: got %d want %d (body=%q)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var out struct {
+		Key struct {
+			Usage     int64 `json:"usage"`
+			Limit     int64 `json:"limit"`
+			Remaining int64 `json:"remaining"`
+		} `json:"key"`
+		Account struct {
+			PlanUsage     int64 `json:"plan_usage"`
+			PlanLimit     int64 `json:"plan_limit"`
+			PlanRemaining int64 `json:"plan_remaining"`
+		} `json:"account"`
+		Pool struct {
+			TotalQuota     int64 `json:"total_quota"`
+			TotalUsed      int64 `json:"total_used"`
+			TotalRemaining int64 `json:"total_remaining"`
+			ActiveKeyCount int64 `json:"active_key_count"`
+		} `json:"pool"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal response: %v (body=%q)", err, w.Body.String())
+	}
+
+	if out.Key.Usage != 350 || out.Key.Limit != 1500 || out.Key.Remaining != 1150 {
+		t.Fatalf("unexpected key summary: %+v", out.Key)
+	}
+	if out.Account.PlanUsage != 350 || out.Account.PlanLimit != 1500 || out.Account.PlanRemaining != 1150 {
+		t.Fatalf("unexpected account summary: %+v", out.Account)
+	}
+	if out.Pool.TotalQuota != 1500 || out.Pool.TotalUsed != 350 || out.Pool.TotalRemaining != 1150 || out.Pool.ActiveKeyCount != 2 {
+		t.Fatalf("unexpected pool summary: %+v", out.Pool)
+	}
+}
+
+func TestProxy_AccessKeyUsage_ReturnsPoolUsageSummary(t *testing.T) {
+	t.Parallel()
+
+	gin.SetMode(gin.TestMode)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	database, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatalf("db open: %v", err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatalf("db handle: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	ctx := context.Background()
+	master := services.NewMasterKeyService(database, logger)
+	if err := master.LoadOrCreate(ctx); err != nil {
+		t.Fatalf("master key init: %v", err)
+	}
+
+	keys := services.NewKeyService(database, logger)
+	first, err := keys.Create(ctx, "tvly-pool-1", "pool-1", 1000)
+	if err != nil {
+		t.Fatalf("create first key: %v", err)
+	}
+	if err := keys.SetUsage(ctx, first.ID, 200, nil); err != nil {
+		t.Fatalf("set first key usage: %v", err)
+	}
+
+	second, err := keys.Create(ctx, "tvly-pool-2", "pool-2", 500)
+	if err != nil {
+		t.Fatalf("create second key: %v", err)
+	}
+	if err := keys.SetUsage(ctx, second.ID, 500, nil); err != nil {
+		t.Fatalf("set second key usage: %v", err)
+	}
+
+	disabled, err := keys.Create(ctx, "tvly-disabled", "disabled", 800)
+	if err != nil {
+		t.Fatalf("create disabled key: %v", err)
+	}
+	if err := keys.MarkInactive(ctx, disabled.ID); err != nil {
+		t.Fatalf("mark disabled key inactive: %v", err)
+	}
+
+	accessKeys := services.NewAccessKeyService(database, logger)
+	accessKey, err := accessKeys.Create(ctx, "client")
+	if err != nil {
+		t.Fatalf("create access key: %v", err)
+	}
+
+	proxy := services.NewTavilyProxy("http://127.0.0.1:1", 200*time.Millisecond, keys, nil, nil, logger)
+	router := NewRouter(Dependencies{
+		MasterKeyService: master,
+		AccessKeyService: accessKeys,
+		TavilyProxy:      proxy,
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/usage", nil)
+	req.Header.Set("Authorization", "Bearer "+accessKey.Key)
+	req.Header.Set("Accept", "application/json")
+
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d want %d (body=%q)", w.Code, http.StatusOK, w.Body.String())
+	}
+
+	var out struct {
+		Pool struct {
+			TotalQuota     int64 `json:"total_quota"`
+			TotalUsed      int64 `json:"total_used"`
+			TotalRemaining int64 `json:"total_remaining"`
+			ActiveKeyCount int64 `json:"active_key_count"`
+		} `json:"pool"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
+		t.Fatalf("unmarshal response: %v (body=%q)", err, w.Body.String())
+	}
+	if out.Pool.TotalQuota != 1500 || out.Pool.TotalUsed != 700 || out.Pool.TotalRemaining != 800 || out.Pool.ActiveKeyCount != 2 {
+		t.Fatalf("unexpected pool summary: %+v", out.Pool)
 	}
 }

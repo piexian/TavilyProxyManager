@@ -62,8 +62,14 @@ func main() {
 
 	settingsService := services.NewSettingsService(database)
 	keyService := services.NewKeyService(database, slogLogger)
+	keyService = keyService.WithSettings(settingsService)
 	logService := services.NewLogService(database, slogLogger)
 	statsService := services.NewStatsService(database)
+	accessKeyService := services.NewAccessKeyService(database, slogLogger)
+	if err := accessKeyService.LoadCache(context.Background()); err != nil {
+		slogLogger.Error("access key cache init failed", "err", err)
+		os.Exit(1)
+	}
 
 	if err := statsService.BackfillFromLogsIfEmpty(context.Background()); err != nil {
 		slogLogger.Error("stats backfill failed", "err", err)
@@ -80,6 +86,7 @@ func main() {
 		Config:           cfg,
 		EmbeddedPublic:   embeddedPublic,
 		MasterKeyService: masterKeyService,
+		AccessKeyService: accessKeyService,
 		SettingsService:  settingsService,
 		KeyService:       keyService,
 		QuotaSyncService: quotaSyncService,

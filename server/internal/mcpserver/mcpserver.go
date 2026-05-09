@@ -15,13 +15,27 @@ import (
 
 type Dependencies struct {
 	MasterKey  *services.MasterKeyService
+	AccessKeys *services.AccessKeyService
 	Proxy      *services.TavilyProxy
 	Stats      *services.StatsService
 	Stateless  bool
 	SessionTTL time.Duration
 }
 
-func NewHandler(deps Dependencies) http.Handler {
+type contextKey int
+
+const (
+	ctxClientIP contextKey = iota
+	ctxAccessKeyID
+	ctxAccessKeyAlias
+)
+
+type Handlers struct {
+	Streamable http.Handler
+	SSE        http.Handler
+}
+
+func NewHandler(deps Dependencies) Handlers {
 	server := mcp.NewServer(&mcp.Implementation{
 		Name:    "tavily-proxy-mcp",
 		Version: "0.1.0",
@@ -53,21 +67,56 @@ func NewHandler(deps Dependencies) http.Handler {
 		InputSchema: map[string]any{"type": "object", "properties": map[string]any{}, "additionalProperties": false},
 	})
 
-	base := mcp.NewStreamableHTTPHandler(func(_ *http.Request) *mcp.Server {
+	getServer := func(_ *http.Request) *mcp.Server {
 		return server
-	}, &mcp.StreamableHTTPOptions{
+	}
+
+	streamable := mcp.NewStreamableHTTPHandler(getServer, &mcp.StreamableHTTPOptions{
 		Stateless:      deps.Stateless,
 		SessionTimeout: deps.SessionTTL,
 	})
 
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		token := parseBearerToken(r.Header.Get("Authorization"))
-		if !deps.MasterKey.Authenticate(token) {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
-		base.ServeHTTP(w, r)
-	})
+	sse := mcp.NewSSEHandler(getServer, nil)
+
+	authWrap := func(base http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			token := parseBearerToken(r.Header.Get("Authorization"))
+
+			var accessKeyID uint
+			var accessKeyAlias string
+
+			if !deps.MasterKey.Authenticate(token) {
+				if deps.AccessKeys == nil {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+				ak, ok := deps.AccessKeys.Authenticate(token)
+				if !ok {
+					http.Error(w, "unauthorized", http.StatusUnauthorized)
+					return
+				}
+				accessKeyID = ak.ID
+				accessKeyAlias = ak.Alias
+			}
+
+			// Inject client IP and access key info into context.
+			clientIP := r.RemoteAddr
+			if ip := r.Header.Get("X-Forwarded-For"); ip != "" {
+				clientIP = strings.SplitN(ip, ",", 2)[0]
+			} else if ip := r.Header.Get("X-Real-Ip"); ip != "" {
+				clientIP = ip
+			}
+			ctx := context.WithValue(r.Context(), ctxClientIP, strings.TrimSpace(clientIP))
+			ctx = context.WithValue(ctx, ctxAccessKeyID, accessKeyID)
+			ctx = context.WithValue(ctx, ctxAccessKeyAlias, accessKeyAlias)
+			base.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+
+	return Handlers{
+		Streamable: authWrap(streamable),
+		SSE:        authWrap(sse),
+	}
 }
 
 func addProxyTool(server *mcp.Server, proxy *services.TavilyProxy, tool *mcp.Tool, method, path string) {
@@ -87,13 +136,22 @@ func addProxyTool(server *mcp.Server, proxy *services.TavilyProxy, tool *mcp.Too
 			headers.Set("Content-Type", "application/json")
 		}
 
+		clientIP, _ := ctx.Value(ctxClientIP).(string)
+		if clientIP == "" {
+			clientIP = "mcp"
+		}
+		accessKeyID, _ := ctx.Value(ctxAccessKeyID).(uint)
+		accessKeyAlias, _ := ctx.Value(ctxAccessKeyAlias).(string)
+
 		resp, err := proxy.Do(ctx, services.ProxyRequest{
-			Method:      method,
-			Path:        path,
-			Headers:     headers,
-			Body:        body,
-			ClientIP:    "mcp",
-			ContentType: "application/json",
+			Method:         method,
+			Path:           path,
+			Headers:        headers,
+			Body:           body,
+			ClientIP:       clientIP,
+			ContentType:    "application/json",
+			AccessKeyID:    accessKeyID,
+			AccessKeyAlias: accessKeyAlias,
 		})
 		if err != nil {
 			return &mcp.CallToolResult{

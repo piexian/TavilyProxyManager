@@ -9,12 +9,22 @@
     <n-message-provider>
       <n-layout style="min-height: 100vh" class="root-layout">
         <n-layout-header bordered class="app-header">
-          <div class="logo-container">
+          <div class="logo-container" style="cursor: pointer" @click="showAdmin = false">
             <n-icon size="24" :component="GlobeOutline" class="logo-icon" />
             <span class="logo-text">Tavily Proxy</span>
           </div>
           <div style="flex: 1"></div>
           <n-space align="center">
+            <n-button
+              v-if="showAdmin && isMobile"
+              quaternary
+              circle
+              @click="showMobileMenu = true"
+            >
+              <template #icon>
+                <n-icon :component="MenuOutline" />
+              </template>
+            </n-button>
             <n-button quaternary circle @click="toggleTheme">
               <template #icon>
                 <n-icon
@@ -30,16 +40,58 @@
                 {{ locale === "zh-CN" ? "中文" : "EN" }}
               </n-button>
             </n-dropdown>
-            <n-button size="small" @click="logout" secondary type="primary">
+            <n-button
+              v-if="!showAdmin"
+              size="small"
+              type="primary"
+              @click="enterAdmin"
+            >
               <template #icon>
-                <n-icon :component="LogOutOutline" />
+                <n-icon :component="SettingsOutline" />
               </template>
-              {{ t("app.menu.logout") }}
+              {{ t("home.adminPanel") }}
             </n-button>
+            <template v-else>
+              <n-button size="small" secondary @click="showAdmin = false">
+                <template #icon>
+                  <n-icon :component="HomeOutline" />
+                </template>
+                {{ t("home.backToHome") }}
+              </n-button>
+              <n-button size="small" @click="logout" secondary type="primary">
+                <template #icon>
+                  <n-icon :component="LogOutOutline" />
+                </template>
+                {{ t("app.menu.logout") }}
+              </n-button>
+            </template>
           </n-space>
         </n-layout-header>
-        <n-layout has-sider position="absolute" style="top: 56px; bottom: 0">
+
+        <!-- Home view (no sidebar) -->
+        <n-layout
+          v-if="!showAdmin"
+          position="absolute"
+          style="top: 56px; bottom: 0"
+        >
+          <n-layout-content
+            content-style="padding: 16px;"
+            :native-scrollbar="false"
+            class="app-content"
+          >
+            <HomeView />
+          </n-layout-content>
+        </n-layout>
+
+        <!-- Admin view (with sidebar) -->
+        <n-layout
+          v-else
+          :has-sider="!isMobile"
+          position="absolute"
+          style="top: 56px; bottom: 0"
+        >
           <n-layout-sider
+            v-if="!isMobile"
             bordered
             collapse-mode="width"
             :collapsed-width="64"
@@ -57,6 +109,7 @@
                 :collapsed-width="64"
                 :collapsed-icon-size="22"
                 :options="menuOptions"
+                @update:value="handleMenuUpdate"
                 class="sider-menu"
               />
             </div>
@@ -72,28 +125,48 @@
                 :refresh-nonce="dashboardRefreshNonce"
               />
               <KeyManagementView v-else-if="active === 'keys'" />
+              <AccessKeysView v-else-if="active === 'access-keys'" />
               <LogsView v-else-if="active === 'logs'" />
               <SettingsView v-else />
             </div>
           </n-layout-content>
         </n-layout>
+
+        <n-drawer
+          v-model:show="showMobileMenu"
+          placement="left"
+          :width="280"
+          :auto-focus="false"
+        >
+          <n-drawer-content :title="t('app.title')" closable body-content-style="padding: 12px;">
+            <n-menu
+              v-model:value="active"
+              :options="menuOptions"
+              @update:value="handleMenuUpdate"
+            />
+          </n-drawer-content>
+        </n-drawer>
       </n-layout>
 
       <MasterKeyModal
-        :show="needsKey"
+        :show="showAuthModal"
         :initial-value="draftKey"
         :error="authError"
+        :cancelable="true"
         @submit="saveKey"
+        @cancel="showAdmin = false"
       />
     </n-message-provider>
   </n-config-provider>
 </template>
 
 <script setup lang="ts">
-import { computed, h, onMounted, ref } from "vue";
+import { computed, h, onBeforeUnmount, onMounted, ref } from "vue";
 import {
   NButton,
   NConfigProvider,
+  NDrawer,
+  NDrawerContent,
   NDropdown,
   NGlobalStyle,
   NIcon,
@@ -114,25 +187,34 @@ import {
 import {
   BarChartOutline,
   GlobeOutline,
+  HomeOutline,
   KeyOutline,
   LanguageOutline,
+  LockClosedOutline,
   ListOutline,
   LogOutOutline,
+  MenuOutline,
   MoonOutline,
   SettingsOutline,
   SunnyOutline,
 } from "@vicons/ionicons5";
 import MasterKeyModal from "./components/MasterKeyModal.vue";
+import HomeView from "./views/HomeView.vue";
 import DashboardView from "./views/DashboardView.vue";
 import KeyManagementView from "./views/KeyManagementView.vue";
+import AccessKeysView from "./views/AccessKeysView.vue";
 import LogsView from "./views/LogsView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import { api, clearMasterKey, getMasterKey, setMasterKey } from "./api/client";
 import { locale, setLocale, t } from "./i18n";
 
-const active = ref<"dashboard" | "keys" | "logs" | "settings">("dashboard");
+const showAdmin = ref(false);
+const active = ref<"dashboard" | "keys" | "access-keys" | "logs" | "settings">("dashboard");
 const collapsed = ref(false);
 const theme = ref<any>(null);
+const isMobile = ref(false);
+const showMobileMenu = ref(false);
+let mobileQuery: MediaQueryList | null = null;
 
 const themeOverrides: GlobalThemeOverrides = {
   common: {
@@ -209,6 +291,7 @@ const menuOptions = computed(() => [
     icon: renderIcon(BarChartOutline),
   },
   { label: t("app.menu.keys"), key: "keys", icon: renderIcon(KeyOutline) },
+  { label: t("app.menu.accessKeys"), key: "access-keys", icon: renderIcon(LockClosedOutline) },
   { label: t("app.menu.logs"), key: "logs", icon: renderIcon(ListOutline) },
   {
     label: t("app.menu.settings"),
@@ -229,9 +312,17 @@ function onSelectLanguage(key: string | number) {
 }
 
 const draftKey = ref("");
-const needsKey = computed(() => !getMasterKey());
+const showAuthModal = computed(() => showAdmin.value && !getMasterKey());
 const authError = ref("");
 const dashboardRefreshNonce = ref(0);
+
+function enterAdmin() {
+  if (getMasterKey()) {
+    showAdmin.value = true;
+  } else {
+    showAdmin.value = true; // triggers showAuthModal
+  }
+}
 
 async function verifyKey() {
   try {
@@ -260,11 +351,29 @@ function logout() {
   clearMasterKey();
   draftKey.value = "";
   authError.value = "";
+  showAdmin.value = false;
+  showMobileMenu.value = false;
 }
 
 function toggleTheme() {
   theme.value = theme.value === null ? darkTheme : null;
   localStorage.setItem("theme", theme.value === null ? "light" : "dark");
+}
+
+function syncMobileState() {
+  if (!mobileQuery) return;
+  isMobile.value = mobileQuery.matches;
+  if (isMobile.value) {
+    collapsed.value = true;
+  } else {
+    showMobileMenu.value = false;
+  }
+}
+
+function handleMenuUpdate() {
+  if (isMobile.value) {
+    showMobileMenu.value = false;
+  }
 }
 
 onMounted(() => {
@@ -273,12 +382,21 @@ onMounted(() => {
     theme.value = darkTheme;
   }
 
+  mobileQuery = window.matchMedia("(max-width: 900px)");
+  syncMobileState();
+  mobileQuery.addEventListener("change", syncMobileState);
+
   window.addEventListener("auth-required", () => {
     const current = getMasterKey();
     clearMasterKey();
     draftKey.value = current;
     authError.value = "";
+    // stay on admin to show auth modal
   });
+});
+
+onBeforeUnmount(() => {
+  mobileQuery?.removeEventListener("change", syncMobileState);
 });
 </script>
 
@@ -347,5 +465,60 @@ onMounted(() => {
 
 :deep(.n-layout-sider) {
   background-color: transparent;
+}
+
+@media (max-width: 900px) {
+  .app-header {
+    padding: 0 12px;
+  }
+
+  .logo-text {
+    font-size: 16px;
+  }
+
+  .main-container {
+    max-width: 100%;
+  }
+
+  :deep(.page-header) {
+    flex-direction: column;
+    align-items: flex-start !important;
+    gap: 12px;
+  }
+
+  :deep(.page-header > .n-space) {
+    width: 100%;
+    flex-wrap: wrap;
+    justify-content: flex-start !important;
+  }
+
+  :deep(.page-header > .n-space .n-base-selection),
+  :deep(.page-header > .n-space .n-input-number) {
+    width: 100% !important;
+  }
+
+  :deep(.pagination-container) {
+    justify-content: flex-start !important;
+    overflow-x: auto;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-header {
+    padding: 0 10px;
+  }
+
+  :deep(.page-title) {
+    font-size: 20px !important;
+  }
+
+  :deep(.page-subtitle) {
+    font-size: 13px !important;
+    line-height: 1.5;
+  }
+
+  :deep(.table-card) {
+    overflow: hidden;
+  }
 }
 </style>

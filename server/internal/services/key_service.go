@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"math/rand"
 	"sort"
+	"strings"
+	"sync/atomic"
 	"time"
 
 	"tavily-proxy/server/internal/models"
@@ -13,13 +15,50 @@ import (
 	"gorm.io/gorm"
 )
 
+const (
+	StrategyBestRemaining  = "best_remaining"
+	StrategyRoundRobin     = "round_robin"
+	StrategySequentialFill = "sequential_fill"
+)
+
 type KeyService struct {
-	db     *gorm.DB
-	logger *slog.Logger
+	db           *gorm.DB
+	logger       *slog.Logger
+	settings     *SettingsService
+	rrCounter    atomic.Uint64
+	seqLastKeyID atomic.Uint64
+}
+
+type PoolQuotaSummary struct {
+	TotalQuota     int64 `json:"total_quota"`
+	TotalUsed      int64 `json:"total_used"`
+	TotalRemaining int64 `json:"total_remaining"`
+	ActiveKeyCount int64 `json:"active_key_count"`
 }
 
 func NewKeyService(db *gorm.DB, logger *slog.Logger) *KeyService {
 	return &KeyService{db: db, logger: logger}
+}
+
+func (s *KeyService) WithSettings(settings *SettingsService) *KeyService {
+	s.settings = settings
+	return s
+}
+
+func (s *KeyService) getStrategy(ctx context.Context) string {
+	if s.settings == nil {
+		return StrategyBestRemaining
+	}
+	v, ok, err := s.settings.Get(ctx, SettingKeyPoolStrategy)
+	if err != nil || !ok {
+		return StrategyBestRemaining
+	}
+	switch v {
+	case StrategyRoundRobin, StrategySequentialFill:
+		return v
+	default:
+		return StrategyBestRemaining
+	}
 }
 
 func (s *KeyService) List(ctx context.Context) ([]models.APIKey, error) {
@@ -34,6 +73,19 @@ func (s *KeyService) Create(ctx context.Context, key, alias string, totalQuota i
 	if totalQuota <= 0 {
 		totalQuota = 1000
 	}
+
+	// Upsert: if key already exists, update alias (when provided) and return.
+	var existing models.APIKey
+	if err := s.db.WithContext(ctx).Where("`key` = ?", key).First(&existing).Error; err == nil {
+		if alias != "" && alias != "Default" {
+			existing.Alias = alias
+			if err := s.db.WithContext(ctx).Save(&existing).Error; err != nil {
+				return nil, err
+			}
+		}
+		return &existing, nil
+	}
+
 	record := models.APIKey{
 		Key:        key,
 		Alias:      alias,
@@ -43,6 +95,100 @@ func (s *KeyService) Create(ctx context.Context, key, alias string, totalQuota i
 		IsInvalid:  false,
 	}
 	if err := s.db.WithContext(ctx).Create(&record).Error; err != nil {
+		return nil, err
+	}
+	return &record, nil
+}
+
+// CreateOrUpdate inserts a new key or updates the alias of an existing one.
+// Returns the record and a boolean indicating whether it was newly created (true) or updated (false).
+func (s *KeyService) CreateOrUpdate(ctx context.Context, key, alias string, totalQuota int) (*models.APIKey, bool, error) {
+	if totalQuota <= 0 {
+		totalQuota = 1000
+	}
+
+	var existing models.APIKey
+	err := s.db.WithContext(ctx).Where("`key` = ?", key).First(&existing).Error
+	if err == nil {
+		// Key exists — update alias if provided and different.
+		if alias != "" && alias != "Default" && existing.Alias != alias {
+			existing.Alias = alias
+			if err := s.db.WithContext(ctx).Save(&existing).Error; err != nil {
+				return nil, false, err
+			}
+		}
+		return &existing, false, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, err
+	}
+
+	// Key does not exist — create.
+	record := models.APIKey{
+		Key:        key,
+		Alias:      alias,
+		TotalQuota: totalQuota,
+		IsActive:   true,
+	}
+	if err := s.db.WithContext(ctx).Create(&record).Error; err != nil {
+		return nil, false, err
+	}
+	return &record, true, nil
+}
+
+// DonateKey creates a new key with is_active=false and is_donated=true.
+// Does not modify existing keys. Returns the record (nil if duplicate).
+func (s *KeyService) DonateKey(ctx context.Context, key, alias string) (*models.APIKey, bool, error) {
+	key = strings.TrimSpace(key)
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		alias = "Donation"
+	}
+
+	var existing models.APIKey
+	err := s.db.WithContext(ctx).Where("`key` = ?", key).First(&existing).Error
+	if err == nil {
+		return &existing, false, nil
+	}
+	if !errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, false, err
+	}
+
+	record := models.APIKey{
+		Key:        key,
+		Alias:      alias,
+		TotalQuota: 1000,
+		IsActive:   false,
+		IsDonated:  true,
+	}
+	if err := s.db.WithContext(ctx).Create(&record).Error; err != nil {
+		var check models.APIKey
+		if s.db.WithContext(ctx).Where("`key` = ?", key).First(&check).Error == nil {
+			return &check, false, nil
+		}
+		return nil, false, err
+	}
+	return &record, true, nil
+}
+
+// ActivateKey sets is_active=true for the given key ID.
+func (s *KeyService) ActivateKey(ctx context.Context, id uint) error {
+	return s.db.WithContext(ctx).Model(&models.APIKey{}).Where("id = ?", id).Update("is_active", true).Error
+}
+
+// QueryByKey finds a key record by its raw key value.
+func (s *KeyService) QueryByKey(ctx context.Context, key string) (*models.APIKey, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return nil, nil
+	}
+
+	var record models.APIKey
+	err := s.db.WithContext(ctx).Where("`key` = ?", key).First(&record).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
 		return nil, err
 	}
 	return &record, nil
@@ -153,6 +299,17 @@ func (s *KeyService) Candidates(ctx context.Context) ([]models.APIKey, error) {
 		return nil, nil
 	}
 
+	switch s.getStrategy(ctx) {
+	case StrategyRoundRobin:
+		return s.candidatesRoundRobin(keys), nil
+	case StrategySequentialFill:
+		return s.candidatesSequentialFill(keys), nil
+	default:
+		return s.candidatesBestRemaining(keys), nil
+	}
+}
+
+func (s *KeyService) candidatesBestRemaining(keys []models.APIKey) []models.APIKey {
 	type scored struct {
 		key       models.APIKey
 		remaining int
@@ -181,7 +338,74 @@ func (s *KeyService) Candidates(ctx context.Context) ([]models.APIKey, error) {
 		}
 		i = j
 	}
-	return out, nil
+	return out
+}
+
+func (s *KeyService) candidatesRoundRobin(keys []models.APIKey) []models.APIKey {
+	n := s.rrCounter.Add(1)
+	start := int(n) % len(keys)
+	out := make([]models.APIKey, len(keys))
+	for i := 0; i < len(keys); i++ {
+		out[i] = keys[(start+i)%len(keys)]
+	}
+	return out
+}
+
+func (s *KeyService) candidatesSequentialFill(keys []models.APIKey) []models.APIKey {
+	sort.Slice(keys, func(i, j int) bool { return keys[i].ID < keys[j].ID })
+
+	lastID := uint(s.seqLastKeyID.Load())
+	targetIdx := 0
+	for i, k := range keys {
+		if k.ID == lastID {
+			targetIdx = i
+			break
+		}
+	}
+
+	out := make([]models.APIKey, 0, len(keys))
+	out = append(out, keys[targetIdx])
+	for i := targetIdx + 1; i < len(keys); i++ {
+		out = append(out, keys[i])
+	}
+	for i := 0; i < targetIdx; i++ {
+		out = append(out, keys[i])
+	}
+
+	s.seqLastKeyID.Store(uint64(out[0].ID))
+	return out
+}
+
+func (s *KeyService) PoolQuotaSummary(ctx context.Context) (PoolQuotaSummary, error) {
+	var keys []models.APIKey
+	if err := s.db.WithContext(ctx).
+		Where("is_active = ? AND is_invalid = ?", true, false).
+		Find(&keys).Error; err != nil {
+		return PoolQuotaSummary{}, err
+	}
+
+	var summary PoolQuotaSummary
+	summary.ActiveKeyCount = int64(len(keys))
+	for _, key := range keys {
+		total := key.TotalQuota
+		if total < 0 {
+			total = 0
+		}
+
+		used := key.UsedQuota
+		if used < 0 {
+			used = 0
+		}
+		if used > total {
+			used = total
+		}
+
+		summary.TotalQuota += int64(total)
+		summary.TotalUsed += int64(used)
+		summary.TotalRemaining += int64(total - used)
+	}
+
+	return summary, nil
 }
 
 func (s *KeyService) FindByID(ctx context.Context, id uint) (*models.APIKey, error) {

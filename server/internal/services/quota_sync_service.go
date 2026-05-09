@@ -215,6 +215,13 @@ func (s *QuotaSyncService) syncKey(ctx context.Context, key models.APIKey) Quota
 		usage = totalQuota
 	}
 
+	// Keep the higher of upstream and local usage to avoid
+	// erasing local tracking when the upstream value lags behind
+	// or resets unexpectedly.
+	if usage < key.UsedQuota {
+		usage = key.UsedQuota
+	}
+
 	_ = s.keys.SetUsage(ctx, key.ID, usage, &totalQuota)
 
 	item.Status = "ok"

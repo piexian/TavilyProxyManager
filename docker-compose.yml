@@ -2,10 +2,18 @@ version: "3.8"
 
 services:
   tavily-proxy:
-    image: ghcr.io/xuncv/tavilyproxymanager:latest
-    pull_policy: always
+    build:
+      context: .
+      args:
+        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
+        GOSUMDB: ${GOSUMDB:-sum.golang.org}
+        HTTP_PROXY: ${HTTP_PROXY:-}
+        HTTPS_PROXY: ${HTTPS_PROXY:-}
+        ALL_PROXY: ${ALL_PROXY:-}
+        NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    image: tavily-proxy:latest
     ports:
-      - "8080:8080"
+      - "6321:8080"
     environment:
       - LISTEN_ADDR=:8080
       - DATABASE_PATH=/app/data/proxy.db

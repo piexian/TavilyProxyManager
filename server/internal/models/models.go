@@ -10,6 +10,7 @@ type APIKey struct {
 	UsedQuota  int        `gorm:"not null;default:0" json:"used_quota"`
 	IsActive   bool       `gorm:"not null;default:true" json:"is_active"`
 	IsInvalid  bool       `gorm:"not null;default:false" json:"is_invalid"`
+	IsDonated  bool       `gorm:"not null;default:false" json:"is_donated"`
 	LastUsedAt *time.Time `json:"last_used_at"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
@@ -29,6 +30,8 @@ type RequestLog struct {
 	ResponseTruncated bool      `gorm:"not null;default:false" json:"response_truncated"`
 	CacheHit          bool      `gorm:"not null;default:false" json:"cache_hit"`
 	ClientIP          string    `json:"client_ip"`
+	AccessKeyID       uint      `gorm:"index" json:"access_key_id"`
+	AccessKeyAlias    string    `json:"access_key_alias"`
 	CreatedAt         time.Time `gorm:"index" json:"created_at"`
 }
 
@@ -39,6 +42,16 @@ type RequestStat struct {
 	Endpoint    string    `gorm:"not null;default:'';index:idx_request_stat_bucket,unique" json:"endpoint"`
 	Count       int64     `gorm:"not null;default:0" json:"count"`
 	UpdatedAt   time.Time `gorm:"index" json:"updated_at"`
+}
+
+type AccessKey struct {
+	ID         uint       `gorm:"primaryKey" json:"id"`
+	Key        string     `gorm:"uniqueIndex;not null" json:"-"`
+	Alias      string     `gorm:"not null" json:"alias"`
+	IsActive   bool       `gorm:"not null;default:true" json:"is_active"`
+	LastUsedAt *time.Time `json:"last_used_at"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 type Setting struct {
