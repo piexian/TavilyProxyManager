@@ -19,8 +19,38 @@ services:
       - DATABASE_PATH=/app/data/proxy.db
       - TAVILY_BASE_URL=https://api.tavily.com
       - UPSTREAM_TIMEOUT=30s
+      - ALL_PROXY=socks5://microwarp:1080
+      - NO_PROXY=localhost,127.0.0.1
     volumes:
       - ./data:/app/data
       # Sync host timezone (Linux): mount host timezone files into container.
       - /etc/localtime:/etc/localtime:ro
+    networks:
+      - default
+      - warp
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        echo "[entrypoint] waiting for microwarp:1080 ..."
+        for i in $$(seq 1 60); do
+          if nc -z microwarp 1080 2>/dev/null; then
+            echo "[entrypoint] microwarp reachable, starting tavily-proxy"
+            exec ./tavily-proxy
+          fi
+          sleep 1
+        done
+        echo "[entrypoint] microwarp not reachable after 60s, starting anyway"
+        exec ./tavily-proxy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
+
+networks:
+  warp:
+    name: warp_default
+    external: true

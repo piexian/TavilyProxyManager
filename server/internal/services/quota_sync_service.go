@@ -199,9 +199,13 @@ func (s *QuotaSyncService) syncKey(ctx context.Context, key models.APIKey) Quota
 		if ue := (*UpstreamStatusError)(nil); errors.As(err, &ue) {
 			switch ue.StatusCode {
 			case http.StatusUnauthorized:
-				_ = s.keys.MarkInvalid(ctx, key.ID)
+				if e := s.keys.MarkInvalid(context.Background(), key.ID); e != nil {
+					s.logger.Warn("quota-sync: mark invalid failed", "key_id", key.ID, "err", e)
+				}
 			case 432, 433:
-				_ = s.keys.MarkExhausted(ctx, key.ID)
+				if e := s.keys.MarkExhausted(context.Background(), key.ID); e != nil {
+					s.logger.Warn("quota-sync: mark exhausted failed", "key_id", key.ID, "err", e)
+				}
 			}
 		}
 		return item
@@ -222,7 +226,10 @@ func (s *QuotaSyncService) syncKey(ctx context.Context, key models.APIKey) Quota
 		usage = key.UsedQuota
 	}
 
-	_ = s.keys.SetUsage(ctx, key.ID, usage, &totalQuota)
+	// 用 background 而非传入的 ctx：上游用量已消耗，即使请求被取消也必须落库
+	if e := s.keys.SetUsage(context.Background(), key.ID, usage, &totalQuota); e != nil {
+		s.logger.Warn("quota-sync: persist usage failed", "key_id", key.ID, "err", e)
+	}
 
 	item.Status = "ok"
 	item.UsedQuota = usage

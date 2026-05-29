@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -44,6 +45,12 @@ func NewRouter(deps Dependencies) http.Handler {
 	r.Any("/sse/*path", gin.WrapH(mcpHandler.SSE))
 
 	r.GET("/healthz", func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), 3*time.Second)
+		defer cancel()
+		if err := deps.SettingsService.Ping(ctx); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"ok": false, "error": "database unavailable"})
+			return
+		}
 		c.JSON(http.StatusOK, gin.H{"ok": true})
 	})
 
