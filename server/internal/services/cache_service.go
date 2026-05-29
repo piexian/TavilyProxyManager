@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sort"
-	"strings"
 	"time"
 
 	"tavily-proxy/server/internal/models"
@@ -133,28 +131,12 @@ func (s *CacheService) BuildCacheKey(body []byte) (string, string) {
 
 	query, _ := m["query"].(string)
 
-	keyFields := map[string]any{}
-	for _, field := range []string{"query", "search_depth", "include_domains", "exclude_domains", "topic", "max_results"} {
-		if v, ok := m[field]; ok {
-			keyFields[field] = v
-		}
-	}
+	// Remove fields that should not affect cache matching
+	delete(m, "api_key")
+	delete(m, "apiKey")
+	delete(m, "include_usage") // usage metadata does not affect search results
 
-	keys := make([]string, 0, len(keyFields))
-	for k := range keyFields {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-
-	var sb strings.Builder
-	for _, k := range keys {
-		v, _ := json.Marshal(keyFields[k])
-		sb.WriteString(k)
-		sb.WriteByte('=')
-		sb.Write(v)
-		sb.WriteByte('&')
-	}
-
-	hash := sha256.Sum256([]byte(sb.String()))
+	normalized, _ := json.Marshal(m)
+	hash := sha256.Sum256(normalized)
 	return fmt.Sprintf("%x", hash), query
 }

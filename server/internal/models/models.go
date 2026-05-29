@@ -22,7 +22,7 @@ type RequestLog struct {
 	KeyUsed           uint      `gorm:"column:key_used;index" json:"key_used"`
 	KeyAlias          string    `json:"key_alias"`
 	Endpoint          string    `gorm:"index;not null" json:"endpoint"`
-	StatusCode        int       `json:"status_code"`
+	StatusCode        int       `gorm:"index" json:"status_code"`
 	LatencyMs         int64     `json:"latency"`
 	RequestBody       string    `gorm:"type:text" json:"request_body,omitempty"`
 	RequestTruncated  bool      `gorm:"not null;default:false" json:"request_truncated"`

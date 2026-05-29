@@ -358,6 +358,11 @@ var tavilySearchInputSchema = map[string]any{
 			"default":     false,
 			"description": "Whether to include credit usage information in the response.",
 		},
+		"exact_match": map[string]any{
+			"type":        "boolean",
+			"default":     false,
+			"description": "Ensure that only search results containing the exact quoted phrase(s) in the query are returned, bypassing synonyms or semantic variations.",
+		},
 	},
 }
 
@@ -370,6 +375,17 @@ var tavilyExtractInputSchema = map[string]any{
 			"type":        "array",
 			"items":       map[string]any{"type": "string"},
 			"description": "URLs to extract content from.",
+		},
+		"query": map[string]any{
+			"type":        "string",
+			"description": "User intent for reranking extracted content chunks.",
+		},
+		"chunks_per_source": map[string]any{
+			"type":        "integer",
+			"minimum":     1,
+			"maximum":     5,
+			"default":     3,
+			"description": "Max content chunks (up to ~500 chars each) to return per source. Only available when query is provided.",
 		},
 		"extract_depth": map[string]any{
 			"type":        "string",
@@ -388,34 +404,21 @@ var tavilyExtractInputSchema = map[string]any{
 			"default":     false,
 			"description": "Include images.",
 		},
-		"include_image_descriptions": map[string]any{
-			"type":        "boolean",
-			"default":     false,
-			"description": "Include descriptions for extracted images.",
-		},
 		"include_favicon": map[string]any{
 			"type":        "boolean",
 			"default":     false,
 			"description": "Include favicon URL.",
 		},
+		"timeout": map[string]any{
+			"type":        "number",
+			"minimum":     1,
+			"maximum":     60,
+			"description": "Max seconds to wait per URL extraction before timing out. Defaults: 10s basic, 30s advanced.",
+		},
 		"include_usage": map[string]any{
 			"type":        "boolean",
 			"default":     false,
 			"description": "Include credit usage information in the response.",
-		},
-		"include_domains": map[string]any{
-			"type":        "array",
-			"items":       map[string]any{"type": "string"},
-			"description": "Domains to include.",
-		},
-		"exclude_domains": map[string]any{
-			"type":        "array",
-			"items":       map[string]any{"type": "string"},
-			"description": "Domains to exclude.",
-		},
-		"country": map[string]any{
-			"type":        "string",
-			"description": "Prioritize content from a specific country (lowercase plain English).",
 		},
 	},
 }
@@ -443,6 +446,7 @@ var tavilyMapInputSchema = map[string]any{
 		"max_breadth": map[string]any{
 			"type":        "integer",
 			"minimum":     1,
+			"maximum":     500,
 			"default":     20,
 			"description": "Max number of links to follow per level.",
 		},
@@ -477,27 +481,12 @@ var tavilyMapInputSchema = map[string]any{
 			"default":     true,
 			"description": "Allow following external-domain links.",
 		},
-		"include_images": map[string]any{
-			"type":        "boolean",
-			"default":     false,
-			"description": "Include images discovered during mapping.",
-		},
-		"extract_depth": map[string]any{
-			"type":        "string",
-			"enum":        []string{"basic", "advanced"},
-			"default":     "basic",
-			"description": "Extraction depth for mapped pages.",
-		},
-		"format": map[string]any{
-			"type":        "string",
-			"enum":        []string{"markdown", "text"},
-			"default":     "markdown",
-			"description": "Format of extracted content.",
-		},
-		"include_favicon": map[string]any{
-			"type":        "boolean",
-			"default":     false,
-			"description": "Include favicon URL for each result.",
+		"timeout": map[string]any{
+			"type":        "number",
+			"minimum":     10,
+			"maximum":     150,
+			"default":     150,
+			"description": "Maximum time in seconds to wait for the map operation before timing out.",
 		},
 		"include_usage": map[string]any{
 			"type":        "boolean",
@@ -530,6 +519,7 @@ var tavilyCrawlInputSchema = map[string]any{
 		"max_breadth": map[string]any{
 			"type":        "integer",
 			"minimum":     1,
+			"maximum":     500,
 			"default":     20,
 			"description": "Max number of links to follow per level.",
 		},
@@ -564,6 +554,13 @@ var tavilyCrawlInputSchema = map[string]any{
 			"default":     true,
 			"description": "Allow following external-domain links.",
 		},
+		"chunks_per_source": map[string]any{
+			"type":        "integer",
+			"minimum":     1,
+			"maximum":     5,
+			"default":     3,
+			"description": "Number of content chunks (max ~500 chars each) to return per source. Only available when instructions are provided.",
+		},
 		"include_images": map[string]any{
 			"type":        "boolean",
 			"default":     false,
@@ -585,6 +582,13 @@ var tavilyCrawlInputSchema = map[string]any{
 			"type":        "boolean",
 			"default":     false,
 			"description": "Include favicon URL for each result.",
+		},
+		"timeout": map[string]any{
+			"type":        "number",
+			"minimum":     10,
+			"maximum":     150,
+			"default":     150,
+			"description": "Maximum time in seconds to wait for the crawl operation before timing out.",
 		},
 		"include_usage": map[string]any{
 			"type":        "boolean",

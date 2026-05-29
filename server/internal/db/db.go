@@ -1,6 +1,7 @@
 package db
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -20,8 +21,48 @@ func Open(path string) (*gorm.DB, error) {
 		return nil, err
 	}
 
+	if err := applyPragmas(database); err != nil {
+		return nil, err
+	}
+
+	// 启动时做完整性检查，DB 损坏或被移走时直接报错而非静默写失败
+	if err := integrityCheck(database); err != nil {
+		return nil, err
+	}
+
+	// SQLite 单写多读，限制连接数以控制锁竞争
+	if sqlDB, err := database.DB(); err == nil {
+		sqlDB.SetMaxOpenConns(8)
+	}
+
 	if err := database.AutoMigrate(&models.APIKey{}, &models.AccessKey{}, &models.RequestLog{}, &models.RequestStat{}, &models.Setting{}, &models.SearchCache{}); err != nil {
 		return nil, err
 	}
 	return database, nil
+}
+
+func applyPragmas(database *gorm.DB) error {
+	pragmas := []string{
+		"PRAGMA busy_timeout = 5000;",
+		"PRAGMA journal_mode = WAL;",
+		"PRAGMA synchronous = NORMAL;",
+		"PRAGMA foreign_keys = ON;",
+	}
+	for _, pragma := range pragmas {
+		if err := database.Exec(pragma).Error; err != nil {
+			return fmt.Errorf("failed to set pragma %q: %w", pragma, err)
+		}
+	}
+	return nil
+}
+
+func integrityCheck(database *gorm.DB) error {
+	var result string
+	if err := database.Raw("PRAGMA quick_check").Scan(&result).Error; err != nil {
+		return fmt.Errorf("integrity check failed to run: %w", err)
+	}
+	if result != "ok" {
+		return fmt.Errorf("database integrity check failed: %s", result)
+	}
+	return nil
 }

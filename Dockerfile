@@ -39,7 +39,7 @@ RUN go build -o tavily-proxy server/main.go
 
 # Stage 3: Final image
 FROM alpine:latest
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add ca-certificates tzdata wget
 WORKDIR /app
 COPY --from=backend-builder /app/tavily-proxy .
 
@@ -47,5 +47,8 @@ VOLUME /app/data
 ENV DATABASE_PATH=/app/data/proxy.db
 
 EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://localhost:8080/healthz || exit 1
 
 CMD ["./tavily-proxy"]

@@ -104,10 +104,6 @@ func TestTavilyUsage_ReturnsAggregatedStatsWithoutUpstreamCall(t *testing.T) {
 	if limit != expected.TotalQuota {
 		t.Fatalf("unexpected limit: got %d want %d", limit, expected.TotalQuota)
 	}
-	if limit-usage != expected.TotalRemaining {
-		t.Fatalf("unexpected remaining: got %d want %d", limit-usage, expected.TotalRemaining)
-	}
-
 	textPayload := mustStructuredMap(t, mustTextJSON(t, res))
 	textKey := mustStructuredMap(t, textPayload["key"])
 	if asInt64(t, textKey["usage"]) != usage || asInt64(t, textKey["limit"]) != limit {
@@ -289,4 +285,3 @@ func asInt64(t *testing.T, v any) int64 {
 		return 0
 	}
 }
-

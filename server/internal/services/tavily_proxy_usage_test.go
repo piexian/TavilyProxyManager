@@ -73,27 +73,25 @@ func TestTavilyProxy_UsageReturnsPoolSummaryWithoutUpstreamCall(t *testing.T) {
 		t.Fatalf("unexpected content type: got %q want %q", got, "application/json; charset=utf-8")
 	}
 
+	// Official /usage response shape: key.usage/limit + account.plan_usage/plan_limit
 	var out struct {
 		Key struct {
-			Usage     int64 `json:"usage"`
-			Limit     int64 `json:"limit"`
-			Remaining int64 `json:"remaining"`
+			Usage int64 `json:"usage"`
+			Limit int64 `json:"limit"`
 		} `json:"key"`
-		Pool struct {
-			TotalQuota     int64 `json:"total_quota"`
-			TotalUsed      int64 `json:"total_used"`
-			TotalRemaining int64 `json:"total_remaining"`
-			ActiveKeyCount int64 `json:"active_key_count"`
-		} `json:"pool"`
+		Account struct {
+			PlanUsage int64 `json:"plan_usage"`
+			PlanLimit int64 `json:"plan_limit"`
+		} `json:"account"`
 	}
 	if err := json.Unmarshal(resp.Body, &out); err != nil {
 		t.Fatalf("unmarshal response: %v (body=%q)", err, string(resp.Body))
 	}
 
-	if out.Key.Usage != 150 || out.Key.Limit != 1000 || out.Key.Remaining != 850 {
+	if out.Key.Usage != 150 || out.Key.Limit != 1000 {
 		t.Fatalf("unexpected key summary: %+v", out.Key)
 	}
-	if out.Pool.TotalQuota != 1000 || out.Pool.TotalUsed != 150 || out.Pool.TotalRemaining != 850 || out.Pool.ActiveKeyCount != 1 {
-		t.Fatalf("unexpected pool summary: %+v", out.Pool)
+	if out.Account.PlanUsage != 150 || out.Account.PlanLimit != 1000 {
+		t.Fatalf("unexpected account summary: %+v", out.Account)
 	}
 }
