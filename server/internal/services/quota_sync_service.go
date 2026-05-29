@@ -202,7 +202,7 @@ func (s *QuotaSyncService) syncKey(ctx context.Context, key models.APIKey) Quota
 				if e := s.keys.MarkInvalid(context.Background(), key.ID); e != nil {
 					s.logger.Warn("quota-sync: mark invalid failed", "key_id", key.ID, "err", e)
 				}
-			case 432, 433:
+			case http.StatusForbidden, 432, 433:
 				if e := s.keys.MarkExhausted(context.Background(), key.ID); e != nil {
 					s.logger.Warn("quota-sync: mark exhausted failed", "key_id", key.ID, "err", e)
 				}

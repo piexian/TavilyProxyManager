@@ -211,34 +211,23 @@ func TestProxy_LegacyQueryAPIKey_MasterKey_ReturnsPoolUsageSummary(t *testing.T)
 
 	var out struct {
 		Key struct {
-			Usage     int64 `json:"usage"`
-			Limit     int64 `json:"limit"`
-			Remaining int64 `json:"remaining"`
+			Usage int64 `json:"usage"`
+			Limit int64 `json:"limit"`
 		} `json:"key"`
 		Account struct {
-			PlanUsage     int64 `json:"plan_usage"`
-			PlanLimit     int64 `json:"plan_limit"`
-			PlanRemaining int64 `json:"plan_remaining"`
+			PlanUsage int64 `json:"plan_usage"`
+			PlanLimit int64 `json:"plan_limit"`
 		} `json:"account"`
-		Pool struct {
-			TotalQuota     int64 `json:"total_quota"`
-			TotalUsed      int64 `json:"total_used"`
-			TotalRemaining int64 `json:"total_remaining"`
-			ActiveKeyCount int64 `json:"active_key_count"`
-		} `json:"pool"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
 		t.Fatalf("unmarshal response: %v (body=%q)", err, w.Body.String())
 	}
 
-	if out.Key.Usage != 350 || out.Key.Limit != 1500 || out.Key.Remaining != 1150 {
+	if out.Key.Usage != 350 || out.Key.Limit != 1500 {
 		t.Fatalf("unexpected key summary: %+v", out.Key)
 	}
-	if out.Account.PlanUsage != 350 || out.Account.PlanLimit != 1500 || out.Account.PlanRemaining != 1150 {
+	if out.Account.PlanUsage != 350 || out.Account.PlanLimit != 1500 {
 		t.Fatalf("unexpected account summary: %+v", out.Account)
-	}
-	if out.Pool.TotalQuota != 1500 || out.Pool.TotalUsed != 350 || out.Pool.TotalRemaining != 1150 || out.Pool.ActiveKeyCount != 2 {
-		t.Fatalf("unexpected pool summary: %+v", out.Pool)
 	}
 }
 
@@ -314,17 +303,22 @@ func TestProxy_AccessKeyUsage_ReturnsPoolUsageSummary(t *testing.T) {
 	}
 
 	var out struct {
-		Pool struct {
-			TotalQuota     int64 `json:"total_quota"`
-			TotalUsed      int64 `json:"total_used"`
-			TotalRemaining int64 `json:"total_remaining"`
-			ActiveKeyCount int64 `json:"active_key_count"`
-		} `json:"pool"`
+		Key struct {
+			Usage int64 `json:"usage"`
+			Limit int64 `json:"limit"`
+		} `json:"key"`
+		Account struct {
+			PlanUsage int64 `json:"plan_usage"`
+			PlanLimit int64 `json:"plan_limit"`
+		} `json:"account"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil {
 		t.Fatalf("unmarshal response: %v (body=%q)", err, w.Body.String())
 	}
-	if out.Pool.TotalQuota != 1500 || out.Pool.TotalUsed != 700 || out.Pool.TotalRemaining != 800 || out.Pool.ActiveKeyCount != 2 {
-		t.Fatalf("unexpected pool summary: %+v", out.Pool)
+	if out.Key.Usage != 700 || out.Key.Limit != 1500 {
+		t.Fatalf("unexpected key summary: %+v", out.Key)
+	}
+	if out.Account.PlanUsage != 700 || out.Account.PlanLimit != 1500 {
+		t.Fatalf("unexpected account summary: %+v", out.Account)
 	}
 }

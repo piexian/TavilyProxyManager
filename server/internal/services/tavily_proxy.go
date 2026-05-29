@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -238,8 +239,8 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 			lastRateLimitedKeyAlias = key.Alias
 			lastRateLimitedLatency = latencyMs
 			continue
-		case 432, 433:
-			p.logger.Warn("key quota exhausted",
+		case http.StatusForbidden, 432, 433:
+			p.logger.Warn("key forbidden or quota exhausted",
 				"request_id", proxyReqID,
 				"key_id", key.ID,
 				"key_alias", key.Alias,
@@ -250,7 +251,11 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 		}
 
 		if status == http.StatusOK && !strings.EqualFold(req.Method, http.MethodGet) {
-			_ = p.keys.IncrementUsed(ctx, key.ID)
+			credits := resolveCredits(resp.Body, req)
+			if err := p.keys.IncrementUsed(ctx, key.ID, credits); err != nil {
+				p.logger.Warn("increment used quota failed",
+					"request_id", proxyReqID, "key_id", key.ID, "credits", credits, "err", err)
+			}
 		}
 
 		createdAt := time.Now()
@@ -406,20 +411,12 @@ func (p *TavilyProxy) poolUsageSummaryResponse(ctx context.Context, req ProxyReq
 
 	body, err := json.Marshal(map[string]any{
 		"key": map[string]any{
-			"usage":     summary.TotalUsed,
-			"limit":     summary.TotalQuota,
-			"remaining": summary.TotalRemaining,
+			"usage": summary.TotalUsed,
+			"limit": summary.TotalQuota,
 		},
 		"account": map[string]any{
-			"plan_usage":     summary.TotalUsed,
-			"plan_limit":     summary.TotalQuota,
-			"plan_remaining": summary.TotalRemaining,
-		},
-		"pool": map[string]any{
-			"total_quota":      summary.TotalQuota,
-			"total_used":       summary.TotalUsed,
-			"total_remaining":  summary.TotalRemaining,
-			"active_key_count": summary.ActiveKeyCount,
+			"plan_usage": summary.TotalUsed,
+			"plan_limit": summary.TotalQuota,
 		},
 	})
 	if err != nil {
@@ -557,14 +554,126 @@ func extractRequestID(body []byte) string {
 	return ""
 }
 
+// resolveCredits determines the credit cost of a successful request.
+// It first attempts to read the actual credit consumption from the upstream
+// response body (usage.credits). If unavailable, it falls back to estimating
+// based on the request path and parameters.
+func resolveCredits(respBody []byte, req ProxyRequest) int {
+	if credits := parseCreditsFromResponse(respBody); credits > 0 {
+		return credits
+	}
+	return estimateCreditsFromRequest(req)
+}
+
+// parseCreditsFromResponse tries to extract the credits field from an
+// upstream Tavily response body: {"usage": {"credits": N}}.
+func parseCreditsFromResponse(body []byte) int {
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		return 0
+	}
+	usage, ok := m["usage"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	credits, ok := usage["credits"]
+	if !ok {
+		return 0
+	}
+	// JSON numbers unmarshal as float64
+	switch v := credits.(type) {
+	case float64:
+		return int(math.Ceil(v))
+	case int:
+		return v
+	}
+	return 0
+}
+
+// estimateCreditsFromRequest provides a conservative credit estimate
+// based on endpoint path and request body parameters.
+//
+// Official credit costs (docs.tavily.com/documentation/api-credits):
+//   - /search: basic/fast/ultra-fast = 1 credit, advanced = 2 credits
+//   - /extract: basic = 1 credit per 5 URLs, advanced = 2 credits per 5 URLs
+//   - /crawl: variable (mapping + extraction), cannot predict from request
+//   - /map: 1 credit per 10 pages (2 with instructions), cannot predict
+func estimateCreditsFromRequest(req ProxyRequest) int {
+	var m map[string]any
+	_ = json.Unmarshal(req.Body, &m)
+	if m == nil {
+		m = map[string]any{}
+	}
+
+	switch {
+	case strings.EqualFold(req.Path, "/search"):
+		depth, _ := m["search_depth"].(string)
+		if strings.EqualFold(depth, "advanced") {
+			return 2
+		}
+		return 1
+
+	case strings.EqualFold(req.Path, "/extract"):
+		advanced := strings.EqualFold(getString(m, "extract_depth"), "advanced")
+		urlCount := getURLCount(m)
+		if urlCount <= 0 {
+			return 1
+		}
+		perUnit := 1
+		if advanced {
+			perUnit = 2
+		}
+		return int(math.Ceil(float64(urlCount)/5.0)) * perUnit
+
+	default:
+		// /crawl, /map, and unknown endpoints: conservative default
+		return 1
+	}
+}
+
+func getString(m map[string]any, key string) string {
+	v, _ := m[key].(string)
+	return v
+}
+
+func getURLCount(m map[string]any) int {
+	urls, ok := m["urls"]
+	if !ok {
+		return 0
+	}
+	switch v := urls.(type) {
+	case []any:
+		return len(v)
+	case string:
+		if v == "" {
+			return 0
+		}
+		return 1
+	}
+	return 0
+}
+
 type usageResponse struct {
 	Key struct {
-		Usage int  `json:"usage"`
-		Limit *int `json:"limit"`
+		Usage         int  `json:"usage"`
+		Limit         *int `json:"limit"`
+		SearchUsage   int  `json:"search_usage"`
+		ExtractUsage  int  `json:"extract_usage"`
+		CrawlUsage    int  `json:"crawl_usage"`
+		MapUsage      int  `json:"map_usage"`
+		ResearchUsage int  `json:"research_usage"`
 	} `json:"key"`
 	Account *struct {
-		PlanUsage int  `json:"plan_usage"`
-		PlanLimit *int `json:"plan_limit"`
+		CurrentPlan   string `json:"current_plan"`
+		PlanUsage     int    `json:"plan_usage"`
+		PlanLimit     *int   `json:"plan_limit"`
+		PaygoUsage    int    `json:"paygo_usage"`
+		PaygoLimit    *int   `json:"paygo_limit"`
+		SearchUsage   int    `json:"search_usage"`
+		ExtractUsage  int    `json:"extract_usage"`
+		CrawlUsage    int    `json:"crawl_usage"`
+		MapUsage      int    `json:"map_usage"`
+		ResearchUsage int    `json:"research_usage"`
 	} `json:"account"`
 }
 
@@ -630,15 +739,20 @@ func (p *TavilyProxy) GetUsage(ctx context.Context, tavilyKey string) (int, *int
 		return 0, nil, err
 	}
 
-	// Prefer account-level stats (new Tavily API) over key-level stats.
+	// Prefer account-level stats (official Tavily API) over key-level stats.
 	if out.Account != nil {
-		usage := out.Account.PlanUsage
+		usage := out.Account.PlanUsage + out.Account.PaygoUsage
 		limit := out.Account.PlanLimit
 		if usage == 0 && out.Key.Usage > 0 {
 			usage = out.Key.Usage
 		}
 		if (limit == nil || *limit == 0) && out.Key.Limit != nil && *out.Key.Limit > 0 {
 			limit = out.Key.Limit
+		}
+		// Add PAYGO limit to effective limit if present
+		if limit != nil && out.Account.PaygoLimit != nil && *out.Account.PaygoLimit > 0 {
+			combined := *limit + *out.Account.PaygoLimit
+			limit = &combined
 		}
 		return usage, limit, nil
 	}
