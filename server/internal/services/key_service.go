@@ -264,8 +264,8 @@ func (s *KeyService) MarkExhausted(ctx context.Context, id uint) error {
 }
 
 func (s *KeyService) IncrementUsed(ctx context.Context, id uint, credits int) error {
-	if credits < 1 {
-		credits = 1
+	if credits < 0 {
+		credits = 0
 	}
 	now := time.Now()
 	return s.db.WithContext(ctx).Model(&models.APIKey{}).Where("id = ?", id).Updates(map[string]any{

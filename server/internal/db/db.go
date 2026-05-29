@@ -16,17 +16,12 @@ func Open(path string) (*gorm.DB, error) {
 		return nil, err
 	}
 
-	// WAL + busy_timeout 避免读写互斥和瞬时锁失败；synchronous=NORMAL 配合 WAL 更快；
-	// _txlock=immediate 在 BEGIN 时即取写锁，避免事务中途升级锁失败
-	dsn := path + "?" +
-		"_pragma=busy_timeout(5000)" +
-		"&_pragma=journal_mode(WAL)" +
-		"&_pragma=synchronous(NORMAL)" +
-		"&_pragma=foreign_keys(1)" +
-		"&_txlock=immediate"
-
-	database, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	database, err := gorm.Open(sqlite.Open(path), &gorm.Config{})
 	if err != nil {
+		return nil, err
+	}
+
+	if err := applyPragmas(database); err != nil {
 		return nil, err
 	}
 
@@ -44,6 +39,21 @@ func Open(path string) (*gorm.DB, error) {
 		return nil, err
 	}
 	return database, nil
+}
+
+func applyPragmas(database *gorm.DB) error {
+	pragmas := []string{
+		"PRAGMA busy_timeout = 5000;",
+		"PRAGMA journal_mode = WAL;",
+		"PRAGMA synchronous = NORMAL;",
+		"PRAGMA foreign_keys = ON;",
+	}
+	for _, pragma := range pragmas {
+		if err := database.Exec(pragma).Error; err != nil {
+			return fmt.Errorf("failed to set pragma %q: %w", pragma, err)
+		}
+	}
+	return nil
 }
 
 func integrityCheck(database *gorm.DB) error {

@@ -117,7 +117,8 @@ func (s *SettingsService) SetTime(ctx context.Context, key string, value time.Ti
 	return s.Set(ctx, key, value.UTC().Format(time.RFC3339))
 }
 
-// Ping 探测 DB 读写是否正常。写一行专用记录，可发现只读/被移走等只在写时暴露的故障。
+// Ping 探测 DB 读是否正常，避免健康检查对 SQLite 产生周期性写入压力。
 func (s *SettingsService) Ping(ctx context.Context) error {
-	return s.db.WithContext(ctx).Save(&models.Setting{Key: "health_check_at", Value: time.Now().UTC().Format(time.RFC3339)}).Error
+	var result int
+	return s.db.WithContext(ctx).Raw("SELECT 1").Scan(&result).Error
 }

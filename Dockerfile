@@ -39,7 +39,7 @@ RUN go build -o tavily-proxy server/main.go
 
 # Stage 3: Final image
 FROM alpine:latest
-RUN apk --no-cache add ca-certificates tzdata
+RUN apk --no-cache add ca-certificates tzdata wget
 WORKDIR /app
 COPY --from=backend-builder /app/tavily-proxy .
 
