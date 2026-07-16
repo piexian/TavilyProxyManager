@@ -218,13 +218,9 @@ func (s *QuotaSyncService) syncKey(ctx context.Context, key models.APIKey) Quota
 	if totalQuota > 0 && usage > totalQuota {
 		usage = totalQuota
 	}
-
-	// Keep the higher of upstream and local usage to avoid
-	// erasing local tracking when the upstream value lags behind
-	// or resets unexpectedly.
-	if usage < key.UsedQuota {
-		usage = key.UsedQuota
-	}
+	// 成功拿到官方 /usage 时以官方值为准，允许覆盖本地更高 used_quota
+	// （本地估算可能偏高；月度重置/官方校准依赖此路径）。
+	// 上游失败时已在上方 early return，本地额度保持不变。
 
 	// 用 background 而非传入的 ctx：上游用量已消耗，即使请求被取消也必须落库
 	if e := s.keys.SetUsage(context.Background(), key.ID, usage, &totalQuota); e != nil {

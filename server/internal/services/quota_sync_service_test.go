@@ -188,6 +188,121 @@ func TestQuotaSyncService_SyncOne_UnauthorizedMarksInvalid(t *testing.T) {
 	}
 }
 
+func TestQuotaSyncService_SyncOne_PrefersOfficialUsageOverLocal(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/usage" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// 官方返回 12，本地已记到 900：同步后应以官方为准
+		_, _ = w.Write([]byte(`{"key":{"usage":12,"limit":1000},"account":{"plan_usage":12,"plan_limit":1000}}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	database, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatalf("db open: %v", err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatalf("db handle: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	keys := NewKeyService(database, logger)
+	proxy := NewTavilyProxy(upstream.URL, 5*time.Second, keys, nil, nil, logger)
+	sync := NewQuotaSyncService(keys, proxy, logger)
+
+	ctx := context.Background()
+	created, err := keys.Create(ctx, "tvly-test", "test", 1000)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	if err := keys.SetUsage(ctx, created.ID, 900, nil); err != nil {
+		t.Fatalf("set usage: %v", err)
+	}
+
+	item, err := sync.SyncOne(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	if item.Status != "ok" {
+		t.Fatalf("status = %q, want ok (err=%q)", item.Status, item.Error)
+	}
+	if item.UsedQuota != 12 {
+		t.Fatalf("item.UsedQuota = %d, want 12", item.UsedQuota)
+	}
+
+	got, err := keys.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get key: %v", err)
+	}
+	if got.UsedQuota != 12 {
+		t.Fatalf("used_quota = %d, want 12 (official should overwrite local)", got.UsedQuota)
+	}
+	if got.TotalQuota != 1000 {
+		t.Fatalf("total_quota = %d, want 1000", got.TotalQuota)
+	}
+}
+
+func TestQuotaSyncService_SyncOne_UpstreamErrorKeepsLocalUsage(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/usage" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"upstream_error"}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	database, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
+	if err != nil {
+		t.Fatalf("db open: %v", err)
+	}
+	sqlDB, err := database.DB()
+	if err != nil {
+		t.Fatalf("db handle: %v", err)
+	}
+	t.Cleanup(func() { _ = sqlDB.Close() })
+
+	keys := NewKeyService(database, logger)
+	proxy := NewTavilyProxy(upstream.URL, 5*time.Second, keys, nil, nil, logger)
+	sync := NewQuotaSyncService(keys, proxy, logger)
+
+	ctx := context.Background()
+	created, err := keys.Create(ctx, "tvly-test", "test", 1000)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+	if err := keys.SetUsage(ctx, created.ID, 42, nil); err != nil {
+		t.Fatalf("set usage: %v", err)
+	}
+
+	_, err = sync.SyncOne(ctx, created.ID)
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+
+	got, err := keys.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get key: %v", err)
+	}
+	if got.UsedQuota != 42 {
+		t.Fatalf("used_quota = %d, want 42 (local kept on upstream error)", got.UsedQuota)
+	}
+}
+
+
 func TestQuotaSyncService_SyncAllWithConcurrency_LimitsConcurrency(t *testing.T) {
 	const concurrency = 2
 	const keyCount = 10
