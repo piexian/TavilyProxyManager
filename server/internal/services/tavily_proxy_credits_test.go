@@ -89,8 +89,26 @@ func TestEstimateCreditsFromRequest(t *testing.T) {
 			want: 1,
 		},
 		{
-			name: "unknown_endpoint",
+			name: "research_default_auto_min",
 			path: "/research",
+			body: `{"input":"latest AI"}`,
+			want: 15,
+		},
+		{
+			name: "research_mini_min",
+			path: "/research",
+			body: `{"input":"latest AI","model":"mini"}`,
+			want: 4,
+		},
+		{
+			name: "research_pro_min",
+			path: "/research",
+			body: `{"input":"latest AI","model":"pro"}`,
+			want: 15,
+		},
+		{
+			name: "unknown_endpoint",
+			path: "/unknown",
 			body: `{}`,
 			want: 1,
 		},
@@ -319,5 +337,101 @@ func TestTavilyProxy_CrawlPreservesUsageWhenClientRequested(t *testing.T) {
 	}
 	if gotKey.UsedQuota != 4 {
 		t.Fatalf("used quota = %d, want 4", gotKey.UsedQuota)
+	}
+}
+
+func TestTavilyProxy_SearchInjectsUsageForAccountingAndStripsDefaultResponse(t *testing.T) {
+	t.Parallel()
+
+	var upstreamReq map[string]any
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&upstreamReq); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"results":[],"usage":{"credits":2},"request_id":"req-search"}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	ctx, keys, proxy := newTavilyProxyTestDeps(t, upstream.URL)
+	key, err := keys.Create(ctx, "tvly-test", "test", 1000)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	resp, err := proxy.Do(ctx, ProxyRequest{
+		Method:      http.MethodPost,
+		Path:        "/search",
+		Body:        []byte(`{"query":"test","search_depth":"advanced"}`),
+		ContentType: "application/json",
+		ClientIP:    "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatalf("proxy request: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if upstreamReq["include_usage"] != true {
+		t.Fatalf("upstream include_usage = %v, want true", upstreamReq["include_usage"])
+	}
+
+	var out map[string]any
+	if err := json.Unmarshal(resp.Body, &out); err != nil {
+		t.Fatalf("decode response body: %v", err)
+	}
+	if _, ok := out["usage"]; ok {
+		t.Fatalf("response leaked usage field: %s", string(resp.Body))
+	}
+
+	gotKey, err := keys.Get(ctx, key.ID)
+	if err != nil {
+		t.Fatalf("get key: %v", err)
+	}
+	if gotKey.UsedQuota != 2 {
+		t.Fatalf("used quota = %d, want 2", gotKey.UsedQuota)
+	}
+}
+
+func TestTavilyProxy_Research201BillsMinimumCredits(t *testing.T) {
+	t.Parallel()
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/research" {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"request_id":"abc","status":"pending","input":"latest AI","model":"mini","response_time":1}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	ctx, keys, proxy := newTavilyProxyTestDeps(t, upstream.URL)
+	key, err := keys.Create(ctx, "tvly-test", "test", 1000)
+	if err != nil {
+		t.Fatalf("create key: %v", err)
+	}
+
+	resp, err := proxy.Do(ctx, ProxyRequest{
+		Method:      http.MethodPost,
+		Path:        "/research",
+		Body:        []byte(`{"input":"latest AI","model":"mini"}`),
+		ContentType: "application/json",
+		ClientIP:    "127.0.0.1",
+	})
+	if err != nil {
+		t.Fatalf("proxy request: %v", err)
+	}
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusCreated)
+	}
+
+	gotKey, err := keys.Get(ctx, key.ID)
+	if err != nil {
+		t.Fatalf("get key: %v", err)
+	}
+	if gotKey.UsedQuota != 4 {
+		t.Fatalf("used quota = %d, want 4 (research mini minimum)", gotKey.UsedQuota)
 	}
 }

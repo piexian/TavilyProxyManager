@@ -217,10 +217,6 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 			continue
 		}
 
-		if status != http.StatusOK && stripInjectedUsage {
-			resp.Body = stripUsageFromResponse(resp.Body)
-		}
-
 		switch status {
 		case http.StatusUnauthorized:
 			p.logger.Warn("key marked invalid",
@@ -256,7 +252,7 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 			continue
 		}
 
-		if status == http.StatusOK && !strings.EqualFold(req.Method, http.MethodGet) {
+		if isBillableSuccess(status, req) {
 			credits, fromUsage := resolveCreditsWithSource(resp.Body, req)
 			if !fromUsage && shouldIncludeUsageForAccounting(req) {
 				p.logger.Warn("upstream usage metadata missing; using fallback credit estimate",
@@ -268,7 +264,8 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 			}
 		}
 
-		if status == http.StatusOK && stripInjectedUsage {
+		// 注入的 include_usage：客户端未请求时剥离响应中的 usage
+		if stripInjectedUsage {
 			resp.Body = stripUsageFromResponse(resp.Body)
 		}
 
@@ -585,7 +582,29 @@ func shouldIncludeUsageForAccounting(req ProxyRequest) bool {
 	if strings.EqualFold(req.Method, http.MethodGet) {
 		return false
 	}
-	return strings.EqualFold(req.Path, "/map") || strings.EqualFold(req.Path, "/crawl")
+	// 官方支持 include_usage 的同步端点；Research 为异步任务，不注入
+	switch strings.ToLower(req.Path) {
+	case "/search", "/extract", "/map", "/crawl":
+		return true
+	default:
+		return false
+	}
+}
+
+// isBillableSuccess 判断是否应在本地累加 Key 已用额度。
+// Research 创建任务成功返回 201 Created，也需记账。
+func isBillableSuccess(status int, req ProxyRequest) bool {
+	if strings.EqualFold(req.Method, http.MethodGet) {
+		return false
+	}
+	if status == http.StatusOK {
+		return true
+	}
+	return status == http.StatusCreated && isResearchCreatePath(req.Path)
+}
+
+func isResearchCreatePath(path string) bool {
+	return strings.EqualFold(strings.TrimRight(path, "/"), "/research")
 }
 
 func bodyWithUsageEnabled(body []byte) ([]byte, bool, bool) {
@@ -682,6 +701,7 @@ func normalizeCredits(v float64) int {
 //   - /extract: basic = 1 credit per 5 URLs, advanced = 2 credits per 5 URLs
 //   - /crawl: variable (mapping + extraction), cannot predict from request
 //   - /map: 1 credit per 10 pages (2 with instructions), cannot predict
+//   - /research: dynamic; use per-request minimum (mini=4, pro=15; auto/default=15)
 func estimateCreditsFromRequest(req ProxyRequest) int {
 	var m map[string]any
 	_ = json.Unmarshal(req.Body, &m)
@@ -708,6 +728,17 @@ func estimateCreditsFromRequest(req ProxyRequest) int {
 			perUnit = 2
 		}
 		return int(math.Ceil(float64(urlCount)/5.0)) * perUnit
+
+	case isResearchCreatePath(req.Path):
+		// 动态计费：按官方每请求下限估算，避免严重低估
+		switch strings.ToLower(getString(m, "model")) {
+		case "mini":
+			return 4
+		case "pro", "auto", "":
+			return 15
+		default:
+			return 15
+		}
 
 	default:
 		// /crawl, /map, and unknown endpoints: conservative default

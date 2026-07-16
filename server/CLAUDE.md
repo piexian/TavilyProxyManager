@@ -58,7 +58,7 @@ Go 后端服务，提供 Tavily API 反向代理、Key 池管理、REST API、MC
 
 ### MCP 端点
 
-- `ANY /mcp` -- Streamable HTTP MCP，工具：`tavily-search`、`tavily-extract`、`tavily-crawl`、`tavily-map`、`tavily-usage`
+- `ANY /mcp` -- Streamable HTTP MCP，工具：`tavily-search`、`tavily-extract`、`tavily-crawl`、`tavily-map`、`tavily-research`、`tavily-research-get`、`tavily-usage`
 
 ### 其他
 

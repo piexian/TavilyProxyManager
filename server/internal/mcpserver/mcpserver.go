@@ -61,6 +61,16 @@ func NewHandler(deps Dependencies) Handlers {
 		Description: "Map a website's URL structure (via Tavily Proxy Pool)",
 		InputSchema: tavilyMapInputSchema,
 	}, http.MethodPost, "/map")
+	addProxyTool(server, deps.Proxy, &mcp.Tool{
+		Name:        "tavily-research",
+		Description: "Create a Tavily Research task (via Tavily Proxy Pool). Returns request_id and status; poll with tavily-research-get until completed/failed. Streaming (stream=true) is not supported through this tool.",
+		InputSchema: tavilyResearchInputSchema,
+	}, http.MethodPost, "/research")
+	addResearchGetTool(server, deps.Proxy, &mcp.Tool{
+		Name:        "tavily-research-get",
+		Description: "Get status/results of a Tavily Research task by request_id (via Tavily Proxy Pool).",
+		InputSchema: tavilyResearchGetInputSchema,
+	})
 	addUsageTool(server, deps.Stats, &mcp.Tool{
 		Name:        "tavily-usage",
 		Description: "Get aggregated usage/quota info from local key statistics",
@@ -192,6 +202,86 @@ func addProxyTool(server *mcp.Server, proxy *services.TavilyProxy, tool *mcp.Too
 				&mcp.TextContent{Text: text},
 			},
 			StructuredContent: structured,
+		}, nil
+	})
+}
+
+func addResearchGetTool(server *mcp.Server, proxy *services.TavilyProxy, tool *mcp.Tool) {
+	server.AddTool(tool, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		var args struct {
+			RequestID string `json:"request_id"`
+		}
+		if len(req.Params.Arguments) > 0 {
+			if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
+				return &mcp.CallToolResult{
+					IsError: true,
+					Content: []mcp.Content{&mcp.TextContent{Text: "invalid arguments: " + err.Error()}},
+					StructuredContent: map[string]any{"error": "invalid arguments"},
+				}, nil
+			}
+		}
+		requestID := strings.TrimSpace(args.RequestID)
+		if requestID == "" {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: "request_id is required"}},
+				StructuredContent: map[string]any{"error": "request_id is required"},
+			}, nil
+		}
+
+		headers := make(http.Header)
+		headers.Set("User-Agent", "tavily-proxy-mcp")
+		headers.Set("Accept", "application/json")
+
+		clientIP, _ := ctx.Value(ctxClientIP).(string)
+		if clientIP == "" {
+			clientIP = "mcp"
+		}
+		accessKeyID, _ := ctx.Value(ctxAccessKeyID).(uint)
+		accessKeyAlias, _ := ctx.Value(ctxAccessKeyAlias).(string)
+
+		resp, err := proxy.Do(ctx, services.ProxyRequest{
+			Method:         http.MethodGet,
+			Path:           "/research/" + requestID,
+			Headers:        headers,
+			ClientIP:       clientIP,
+			AccessKeyID:    accessKeyID,
+			AccessKeyAlias: accessKeyAlias,
+		})
+		if err != nil {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
+				StructuredContent: map[string]any{"error": err.Error()},
+			}, nil
+		}
+
+		text := string(resp.Body)
+		var parsed any
+		if err := json.Unmarshal(resp.Body, &parsed); err != nil {
+			parsed = nil
+		}
+		var structured any
+		if m, ok := parsed.(map[string]any); ok {
+			structured = m
+		} else {
+			structured = map[string]any{"raw": text}
+		}
+
+		// 200 completed/failed, 202 pending/in_progress 均返回给调用方
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+			return &mcp.CallToolResult{
+				IsError: true,
+				Content: []mcp.Content{
+					&mcp.TextContent{Text: fmt.Sprintf("Upstream status %d: %s", resp.StatusCode, text)},
+				},
+				StructuredContent: structured,
+			}, nil
+		}
+
+		return &mcp.CallToolResult{
+			Content:            []mcp.Content{&mcp.TextContent{Text: text}},
+			StructuredContent:  structured,
 		}, nil
 	})
 }
@@ -594,6 +684,79 @@ var tavilyCrawlInputSchema = map[string]any{
 			"type":        "boolean",
 			"default":     false,
 			"description": "Include credit usage information in the response.",
+		},
+	},
+}
+
+var tavilyResearchInputSchema = map[string]any{
+	"type":                 "object",
+	"additionalProperties": true,
+	"required":             []string{"input"},
+	"properties": map[string]any{
+		"input": map[string]any{
+			"type":        "string",
+			"description": "The research task or question to investigate.",
+		},
+		"model": map[string]any{
+			"type":        "string",
+			"enum":        []string{"mini", "pro", "auto"},
+			"default":     "auto",
+			"description": "Research agent model. mini: targeted/efficient (min 4 credits); pro: comprehensive (min 15 credits); auto: let Tavily choose.",
+		},
+		"stream": map[string]any{
+			"type":        "boolean",
+			"default":     false,
+			"description": "SSE streaming. Keep false when using this MCP tool; streaming is not supported through the proxy tool path.",
+		},
+		"output_schema": map[string]any{
+			"type":        "object",
+			"description": "JSON Schema for structured research output. Must include properties; optional required.",
+		},
+		"citation_format": map[string]any{
+			"type":        "string",
+			"enum":        []string{"numbered", "mla", "apa", "chicago"},
+			"default":     "numbered",
+			"description": "Citation format in the research report.",
+		},
+		"include_domains": map[string]any{
+			"type":        "array",
+			"items":       map[string]any{"type": "string"},
+			"description": "Soft preference domains (max 20). Prioritized but not exclusive.",
+		},
+		"exclude_domains": map[string]any{
+			"type":        "array",
+			"items":       map[string]any{"type": "string"},
+			"description": "Hard blocklist domains and subdomains (max 20).",
+		},
+		"output_length": map[string]any{
+			"type":        "string",
+			"enum":        []string{"short", "standard", "long"},
+			"default":     "standard",
+			"description": "Target response size (soft guidance).",
+		},
+		"files": map[string]any{
+			"type":        "array",
+			"description": "Optional files (.txt/.md/.json) as base64 sources. Max 5 files.",
+			"items": map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"name": map[string]any{"type": "string"},
+					"data": map[string]any{"type": "string"},
+					"type": map[string]any{"type": "string", "enum": []string{"base64"}},
+				},
+			},
+		},
+	},
+}
+
+var tavilyResearchGetInputSchema = map[string]any{
+	"type":                 "object",
+	"additionalProperties": false,
+	"required":             []string{"request_id"},
+	"properties": map[string]any{
+		"request_id": map[string]any{
+			"type":        "string",
+			"description": "Research task request_id returned by tavily-research / POST /research.",
 		},
 	},
 }
