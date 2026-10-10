@@ -19,7 +19,6 @@ import (
 func TestHandleExportKeys_ExcludesInvalidKeys(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	database, err := db.Open(filepath.Join(t.TempDir(), "app.db"))

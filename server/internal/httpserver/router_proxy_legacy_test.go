@@ -13,8 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
 	"tavily-proxy/server/internal/db"
 	"tavily-proxy/server/internal/services"
 )
@@ -22,7 +20,6 @@ import (
 func TestProxy_LegacyBodyAPIKey_TavilyKey_IsUnauthorized(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	const directKey = "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"
@@ -81,7 +78,6 @@ func TestProxy_LegacyBodyAPIKey_TavilyKey_IsUnauthorized(t *testing.T) {
 func TestProxy_LegacyBodyAPIKey_MasterKey_StripsFieldAndUsesPoolKey(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	const poolKey = "tvly-pool-1234567890abcdef"
@@ -148,7 +144,6 @@ func TestProxy_LegacyBodyAPIKey_MasterKey_StripsFieldAndUsesPoolKey(t *testing.T
 func TestProxy_LegacyQueryAPIKey_MasterKey_ReturnsPoolUsageSummary(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	database, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
@@ -234,7 +229,6 @@ func TestProxy_LegacyQueryAPIKey_MasterKey_ReturnsPoolUsageSummary(t *testing.T)
 func TestProxy_AccessKeyUsage_ReturnsPoolUsageSummary(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	database, err := db.Open(filepath.Join(t.TempDir(), "app.db"))

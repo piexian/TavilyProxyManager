@@ -51,7 +51,6 @@ func portalCtx(method, target string, body string, accessKeyID uint, accessKeyAl
 // 删除非己 Key 必须 403，且不真正删除；删除自己的 Key 正常 200。
 func TestHandlePortalDeleteKey_OwnershipEnforced(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	database := portalTestDB(t)
 	keys := services.NewKeyService(database, logger)
@@ -86,7 +85,6 @@ func TestHandlePortalDeleteKey_OwnershipEnforced(t *testing.T) {
 // 重置访问密钥后旧 token 立即失效、新 token 生效。
 func TestHandlePortalResetKey_InvalidatesOldToken(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	database := portalTestDB(t)
 	accessKeys := services.NewAccessKeyService(database, logger)
@@ -126,7 +124,6 @@ func TestHandlePortalResetKey_InvalidatesOldToken(t *testing.T) {
 // 用已存在的 alias 捐赠必须被拒（409 alias_taken），且不触达 Key 处理。
 func TestHandleDonateKeys_AliasTaken(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	database := portalTestDB(t)
 	ctx := context.Background()
@@ -160,7 +157,6 @@ func TestHandleDonateKeys_AliasTaken(t *testing.T) {
 // 门户时序：系列A=名下 Key 被调用次数，系列B=本人发起请求数。
 func TestHandlePortalTimeSeries_TwoSeries(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	database := portalTestDB(t)
 	ctx := context.Background()
@@ -226,7 +222,6 @@ func TestHandlePortalTimeSeries_TwoSeries(t *testing.T) {
 // （证明代理 NoRoute / MCP 复用同一方法且不检查该字段，API/MCP 调用不受影响）。
 func TestAccessKeyAuthMiddleware_LoginDisabled(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	database := portalTestDB(t)
 	accessKeys := services.NewAccessKeyService(database, logger)

@@ -20,7 +20,6 @@ import (
 func TestHandleListLogs_StatusCodeFilter(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	database, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
@@ -76,7 +75,6 @@ func TestHandleListLogs_StatusCodeFilter(t *testing.T) {
 func TestHandleListLogs_InvalidStatusCode(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	database, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
@@ -113,7 +111,6 @@ func TestHandleListLogs_InvalidStatusCode(t *testing.T) {
 func TestHandleLogStatusCodes_ReturnsCounts(t *testing.T) {
 	t.Parallel()
 
-	gin.SetMode(gin.TestMode)
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
 	database, err := db.Open(filepath.Join(t.TempDir(), "app.db"))
