@@ -426,3 +426,93 @@ func (s *KeyService) DeleteInvalid(ctx context.Context) (int64, error) {
 	result := s.db.WithContext(ctx).Where("is_invalid = ?", true).Delete(&models.APIKey{})
 	return result.RowsAffected, result.Error
 }
+
+// SetAccessKeyID 将一个 APIKey 归属到指定的访问密钥（捐赠者）。
+func (s *KeyService) SetAccessKeyID(ctx context.Context, id, accessKeyID uint) error {
+	return s.db.WithContext(ctx).Model(&models.APIKey{}).
+		Where("id = ?", id).Update("access_key_id", accessKeyID).Error
+}
+
+// DonateKeyForAccessKey 在捐赠者门户中新增 Key：复用 DonateKey 的校验/去重，
+// 仅当本次确为新建时才把归属写到该访问密钥（已存在的 Key 不改归属，避免抢占他人 Key）。
+func (s *KeyService) DonateKeyForAccessKey(ctx context.Context, key, alias string, accessKeyID uint) (*models.APIKey, bool, error) {
+	record, created, err := s.DonateKey(ctx, key, alias)
+	if err != nil {
+		return nil, false, err
+	}
+	if created && record != nil {
+		if err := s.SetAccessKeyID(ctx, record.ID, accessKeyID); err != nil {
+			return nil, false, err
+		}
+		record.AccessKeyID = accessKeyID
+	}
+	return record, created, nil
+}
+
+// ListByAccessKey 返回归属于指定访问密钥的全部 Key（按 id 倒序）。
+func (s *KeyService) ListByAccessKey(ctx context.Context, accessKeyID uint) ([]models.APIKey, error) {
+	var keys []models.APIKey
+	if err := s.db.WithContext(ctx).
+		Where("access_key_id = ?", accessKeyID).
+		Order("id desc").
+		Find(&keys).Error; err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
+// DonatedSummaryByAccessKey 聚合某访问密钥名下（非失效）Key 的额度用量。
+// 复用 PoolQuotaSummary：ActiveKeyCount 在此表示该捐赠者名下非失效 Key 数。
+func (s *KeyService) DonatedSummaryByAccessKey(ctx context.Context, accessKeyID uint) (PoolQuotaSummary, error) {
+	var keys []models.APIKey
+	if err := s.db.WithContext(ctx).
+		Where("access_key_id = ? AND is_invalid = ?", accessKeyID, false).
+		Find(&keys).Error; err != nil {
+		return PoolQuotaSummary{}, err
+	}
+
+	var summary PoolQuotaSummary
+	summary.ActiveKeyCount = int64(len(keys))
+	for _, key := range keys {
+		total := key.TotalQuota
+		if total < 0 {
+			total = 0
+		}
+		used := key.UsedQuota
+		if used < 0 {
+			used = 0
+		}
+		if used > total {
+			used = total
+		}
+		summary.TotalQuota += int64(total)
+		summary.TotalUsed += int64(used)
+		summary.TotalRemaining += int64(total - used)
+	}
+	return summary, nil
+}
+
+// FindOwnedByID 查找归属于指定访问密钥的 Key；非己 Key（或不存在）返回 nil，处理器据此返回 403。
+func (s *KeyService) FindOwnedByID(ctx context.Context, accessKeyID, keyID uint) (*models.APIKey, error) {
+	var key models.APIKey
+	err := s.db.WithContext(ctx).
+		Where("id = ? AND access_key_id = ?", keyID, accessKeyID).
+		First(&key).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &key, nil
+}
+
+// Historical unowned donations require an explicit ownership decision, not an
+// automatic match against an alias a new user can register.
+func (s *KeyService) UnownedDonationAliasExists(ctx context.Context, alias string) (bool, error) {
+	var count int64
+	err := s.db.WithContext(ctx).Model(&models.APIKey{}).
+		Where("is_donated = ? AND COALESCE(access_key_id, 0) = 0 AND LOWER(TRIM(alias)) = LOWER(?)", true, strings.TrimSpace(alias)).
+		Count(&count).Error
+	return count > 0, err
+}

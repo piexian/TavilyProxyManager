@@ -97,44 +97,59 @@ func (s *StatsService) Get(ctx context.Context) (Stats, error) {
 	}, nil
 }
 
-func (s *StatsService) TimeSeries(ctx context.Context, granularity string) (TimeSeries, error) {
+// timeBucketSpec 描述一种粒度下的时间分桶规则，被管理员全局时序与捐赠者门户时序共用，
+// 以保证两边的 bucket key / label 格式完全一致。
+type timeBucketSpec struct {
+	start        time.Time
+	points       int
+	step         func(time.Time) time.Time
+	bucketKey    func(time.Time) string
+	labelFormat  func(time.Time) string
+	strftimeExpr string // SQLite 按 created_at 分桶的表达式（与 bucketKey 输出格式对应）
+}
+
+// timeBuckets 返回归一化后的 granularity 及其分桶规则。
+func timeBuckets(granularity string) (string, timeBucketSpec, error) {
 	now := time.Now()
-
-	var (
-		start       time.Time
-		points      int
-		step        func(time.Time) time.Time
-		bucketKey   func(time.Time) string
-		labelFormat func(time.Time) string
-	)
-
+	var spec timeBucketSpec
 	switch granularity {
 	case "", "hour":
 		granularity = "hour"
 		// Last 24 hours, inclusive.
-		start = time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, now.Location()).Add(-23 * time.Hour)
-		points = 24
-		step = func(t time.Time) time.Time { return t.Add(time.Hour) }
-		bucketKey = func(t time.Time) string { return t.Format("2006-01-02 15:00") }
-		labelFormat = func(t time.Time) string { return t.Format("01-02 15:00") }
+		spec.start = time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, now.Location()).Add(-23 * time.Hour)
+		spec.points = 24
+		spec.step = func(t time.Time) time.Time { return t.Add(time.Hour) }
+		spec.bucketKey = func(t time.Time) string { return t.Format("2006-01-02 15:00") }
+		spec.labelFormat = func(t time.Time) string { return t.Format("01-02 15:00") }
+		spec.strftimeExpr = "strftime('%Y-%m-%d %H:00', created_at, 'localtime')"
 	case "day":
-		start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -29)
-		points = 30
-		step = func(t time.Time) time.Time { return t.AddDate(0, 0, 1) }
-		bucketKey = func(t time.Time) string { return t.Format("2006-01-02") }
-		labelFormat = func(t time.Time) string { return t.Format("01-02") }
+		spec.start = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location()).AddDate(0, 0, -29)
+		spec.points = 30
+		spec.step = func(t time.Time) time.Time { return t.AddDate(0, 0, 1) }
+		spec.bucketKey = func(t time.Time) string { return t.Format("2006-01-02") }
+		spec.labelFormat = func(t time.Time) string { return t.Format("01-02") }
+		spec.strftimeExpr = "strftime('%Y-%m-%d', created_at, 'localtime')"
 	case "month":
 		firstOfThisMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, now.Location())
-		start = firstOfThisMonth.AddDate(0, -11, 0)
-		points = 12
-		step = func(t time.Time) time.Time { return t.AddDate(0, 1, 0) }
-		bucketKey = func(t time.Time) string { return t.Format("2006-01") }
-		labelFormat = func(t time.Time) string { return t.Format("2006-01") }
+		spec.start = firstOfThisMonth.AddDate(0, -11, 0)
+		spec.points = 12
+		spec.step = func(t time.Time) time.Time { return t.AddDate(0, 1, 0) }
+		spec.bucketKey = func(t time.Time) string { return t.Format("2006-01") }
+		spec.labelFormat = func(t time.Time) string { return t.Format("2006-01") }
+		spec.strftimeExpr = "strftime('%Y-%m', created_at, 'localtime')"
 	default:
-		return TimeSeries{}, fmt.Errorf("invalid granularity: %s", granularity)
+		return "", timeBucketSpec{}, fmt.Errorf("invalid granularity: %s", granularity)
+	}
+	return granularity, spec, nil
+}
+
+func (s *StatsService) TimeSeries(ctx context.Context, granularity string) (TimeSeries, error) {
+	granularity, spec, err := timeBuckets(granularity)
+	if err != nil {
+		return TimeSeries{}, err
 	}
 
-	startBucket := bucketKey(start)
+	startBucket := spec.bucketKey(spec.start)
 	totalCounts, err := s.bucketCountsFromStats(ctx, granularity, "", startBucket)
 	if err != nil {
 		return TimeSeries{}, err
@@ -144,17 +159,17 @@ func (s *StatsService) TimeSeries(ctx context.Context, granularity string) (Time
 		return TimeSeries{}, err
 	}
 
-	labels := make([]string, 0, points)
-	totalSeries := make([]int64, 0, points)
-	searchSeries := make([]int64, 0, points)
+	labels := make([]string, 0, spec.points)
+	totalSeries := make([]int64, 0, spec.points)
+	searchSeries := make([]int64, 0, spec.points)
 
-	t := start
-	for i := 0; i < points; i++ {
-		key := bucketKey(t)
-		labels = append(labels, labelFormat(t))
+	t := spec.start
+	for i := 0; i < spec.points; i++ {
+		key := spec.bucketKey(t)
+		labels = append(labels, spec.labelFormat(t))
 		totalSeries = append(totalSeries, totalCounts[key])
 		searchSeries = append(searchSeries, searchCounts[key])
-		t = step(t)
+		t = spec.step(t)
 	}
 
 	return TimeSeries{
@@ -165,6 +180,76 @@ func (s *StatsService) TimeSeries(ctx context.Context, granularity string) (Time
 			{Name: "Search", Data: searchSeries},
 		},
 	}, nil
+}
+
+// PortalTimeSeries 为单个捐赠者构建时序：
+//   - 系列 A「Served By My Keys」：他名下 Key 被调用次数（RequestLog.key_used ∈ donatedKeyIDs）
+//   - 系列 B「My Requests」：他本人用访问密钥发起的请求数（RequestLog.access_key_id = accessKeyID）
+//
+// 直接对 RequestLog 分组（RequestStat 无 key 维度），bucket/label 与 TimeSeries 完全一致；
+// 受日志保留期限制，仅覆盖保留窗口内的数据。
+func (s *StatsService) PortalTimeSeries(ctx context.Context, granularity string, accessKeyID uint, donatedKeyIDs []uint) (TimeSeries, error) {
+	granularity, spec, err := timeBuckets(granularity)
+	if err != nil {
+		return TimeSeries{}, err
+	}
+
+	servedCounts := map[string]int64{}
+	if len(donatedKeyIDs) > 0 {
+		servedCounts, err = s.bucketCountsFromLogs(ctx, spec.strftimeExpr, spec.start, "key_used IN ?", donatedKeyIDs)
+		if err != nil {
+			return TimeSeries{}, err
+		}
+	}
+	myCounts, err := s.bucketCountsFromLogs(ctx, spec.strftimeExpr, spec.start, "access_key_id = ?", accessKeyID)
+	if err != nil {
+		return TimeSeries{}, err
+	}
+
+	labels := make([]string, 0, spec.points)
+	servedSeries := make([]int64, 0, spec.points)
+	mySeries := make([]int64, 0, spec.points)
+
+	t := spec.start
+	for i := 0; i < spec.points; i++ {
+		key := spec.bucketKey(t)
+		labels = append(labels, spec.labelFormat(t))
+		servedSeries = append(servedSeries, servedCounts[key])
+		mySeries = append(mySeries, myCounts[key])
+		t = spec.step(t)
+	}
+
+	return TimeSeries{
+		Granularity: granularity,
+		Labels:      labels,
+		Series: []TimeSeriesSeries{
+			{Name: "Served By My Keys", Data: servedSeries},
+			{Name: "My Requests", Data: mySeries},
+		},
+	}, nil
+}
+
+// bucketCountsFromLogs 按 strftime 表达式对 RequestLog 分桶计数，限定 created_at >= start 及一个附加条件。
+func (s *StatsService) bucketCountsFromLogs(ctx context.Context, strftimeExpr string, start time.Time, cond string, arg any) (map[string]int64, error) {
+	type row struct {
+		Bucket string `gorm:"column:bucket"`
+		Count  int64  `gorm:"column:count"`
+	}
+	var rows []row
+	if err := s.db.WithContext(ctx).
+		Model(&models.RequestLog{}).
+		Select(strftimeExpr + " as bucket, COUNT(*) as count").
+		Where("created_at >= ?", start).
+		Where(cond, arg).
+		Group("bucket").
+		Scan(&rows).Error; err != nil {
+		return nil, err
+	}
+	out := make(map[string]int64, len(rows))
+	for _, r := range rows {
+		out[r.Bucket] = r.Count
+	}
+	return out, nil
 }
 
 func (s *StatsService) bucketCountsFromStats(ctx context.Context, granularity, endpoint, startBucket string) (map[string]int64, error) {

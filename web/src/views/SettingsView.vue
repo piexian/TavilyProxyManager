@@ -654,6 +654,8 @@ onMounted(async () => {
 .settings-card {
   border-radius: 12px;
   height: 100%;
+  border: 2px solid var(--comic-ink);
+  box-shadow: var(--comic-shadow);
 }
 
 .field-label {
@@ -664,9 +666,10 @@ onMounted(async () => {
 }
 
 .sync-stats {
-  background: rgba(0, 0, 0, 0.02);
+  background: rgba(14, 165, 233, 0.06);
   padding: 12px;
-  border-radius: 8px;
+  border-radius: 10px;
+  border: 2px solid var(--comic-ink);
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -688,7 +691,7 @@ onMounted(async () => {
 }
 
 .sync-stat-item .value.success {
-  color: #18a058;
+  color: #16a34a;
 }
 
 .error-alert {

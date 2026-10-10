@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -94,8 +95,9 @@ func (s *AccessKeyService) Create(ctx context.Context, alias string) (*models.Ac
 }
 
 type AccessKeyUpdate struct {
-	Alias    *string `json:"alias"`
-	IsActive *bool   `json:"is_active"`
+	Alias         *string `json:"alias"`
+	IsActive      *bool   `json:"is_active"`
+	LoginDisabled *bool   `json:"login_disabled"`
 }
 
 func (s *AccessKeyService) Update(ctx context.Context, id uint, upd AccessKeyUpdate) (*models.AccessKey, error) {
@@ -108,6 +110,9 @@ func (s *AccessKeyService) Update(ctx context.Context, id uint, upd AccessKeyUpd
 	}
 	if upd.IsActive != nil {
 		key.IsActive = *upd.IsActive
+	}
+	if upd.LoginDisabled != nil {
+		key.LoginDisabled = *upd.LoginDisabled
 	}
 	if err := s.db.WithContext(ctx).Save(&key).Error; err != nil {
 		return nil, err
@@ -153,4 +158,34 @@ func (s *AccessKeyService) GetRawKey(ctx context.Context, id uint) (string, erro
 		return "", err
 	}
 	return key.Key, nil
+}
+
+// AliasExists 判断别名是否已被占用（去空格、忽略大小写）；excludeID 用于更新时排除自身（传 0 表示不排除）。
+func (s *AccessKeyService) AliasExists(ctx context.Context, alias string, excludeID uint) (bool, error) {
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		return false, nil
+	}
+	var count int64
+	if err := s.db.WithContext(ctx).Model(&models.AccessKey{}).
+		Where("LOWER(alias) = LOWER(?) AND id <> ?", alias, excludeID).
+		Count(&count).Error; err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// ResetKey 轮换访问密钥的 token：ID/Alias/IsActive 及名下 Key 的归属(access_key_id)全部不变，
+// 仅替换 Key 原文并刷新缓存，使旧 token 立即失效、新 token 立即生效。
+func (s *AccessKeyService) ResetKey(ctx context.Context, id uint) (string, error) {
+	token, err := generateSecret(32)
+	if err != nil {
+		return "", err
+	}
+	if err := s.db.WithContext(ctx).Model(&models.AccessKey{}).
+		Where("id = ?", id).Update("key", token).Error; err != nil {
+		return "", err
+	}
+	s.refreshCache(ctx)
+	return token, nil
 }

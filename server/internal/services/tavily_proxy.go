@@ -10,8 +10,10 @@ import (
 	"log/slog"
 	"math"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -214,6 +216,10 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 				"err", err,
 			)
 			lastErr = err
+			var uncertain *upstreamResultUnknownError
+			if errors.As(err, &uncertain) || ctx.Err() != nil {
+				return ProxyResponse{}, err
+			}
 			continue
 		}
 
@@ -241,8 +247,25 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 			lastRateLimitedKeyAlias = key.Alias
 			lastRateLimitedLatency = latencyMs
 			continue
-		case http.StatusForbidden, 432, 433:
-			p.logger.Warn("key forbidden or quota exhausted",
+		case http.StatusForbidden:
+			// 403 可能是付费功能限制（如 /logs 仅付费计划），与 Key 额度无关：
+			// 换下一个 Key 重试，但不把该 Key 标记为额度耗尽。
+			p.logger.Warn("key forbidden (not marked exhausted)",
+				"request_id", proxyReqID,
+				"key_id", key.ID,
+				"key_alias", key.Alias,
+				"status", status,
+			)
+			resp.ProxyRequestID = proxyReqID
+			resp.TavilyRequestID = tavilyReqID
+			lastRateLimitedResp = resp
+			hasRateLimitedResp = true
+			lastRateLimitedKeyID = key.ID
+			lastRateLimitedKeyAlias = key.Alias
+			lastRateLimitedLatency = latencyMs
+			continue
+		case 432, 433:
+			p.logger.Warn("key quota exhausted",
 				"request_id", proxyReqID,
 				"key_id", key.ID,
 				"key_alias", key.Alias,
@@ -471,6 +494,10 @@ func truncateForLog(data []byte, maxBytes int) (string, bool) {
 }
 
 func (p *TavilyProxy) tryKey(ctx context.Context, keyID uint, tavilyKey string, req ProxyRequest, proxyReqID string) (ProxyResponse, int, int64, string, error) {
+	var wroteRequest atomic.Bool
+	ctx = httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		WroteRequest: func(httptrace.WroteRequestInfo) { wroteRequest.Store(true) },
+	})
 	targetURL := p.baseURL + req.Path
 	if req.RawQuery != "" {
 		targetURL += "?" + req.RawQuery
@@ -497,7 +524,9 @@ func (p *TavilyProxy) tryKey(ctx context.Context, keyID uint, tavilyKey string, 
 	)
 
 	start := time.Now()
-	upstreamResp, err := p.client.Do(upstreamReq)
+	client := *p.client
+	client.Timeout = p.requestTimeout(req)
+	upstreamResp, err := client.Do(upstreamReq)
 	latencyMs := time.Since(start).Milliseconds()
 	if err != nil {
 		p.logger.Warn("upstream call error",
@@ -507,6 +536,9 @@ func (p *TavilyProxy) tryKey(ctx context.Context, keyID uint, tavilyKey string, 
 			"latency_ms", latencyMs,
 			"err", err,
 		)
+		if wroteRequest.Load() && req.Method != http.MethodGet && req.Method != http.MethodHead {
+			err = &upstreamResultUnknownError{err}
+		}
 		return ProxyResponse{}, 0, latencyMs, "", err
 	}
 	defer upstreamResp.Body.Close()
@@ -526,6 +558,9 @@ func (p *TavilyProxy) tryKey(ctx context.Context, keyID uint, tavilyKey string, 
 			"status", upstreamResp.StatusCode,
 			"err", err,
 		)
+		if req.Method != http.MethodGet && req.Method != http.MethodHead {
+			err = &upstreamResultUnknownError{err}
+		}
 		return ProxyResponse{}, upstreamResp.StatusCode, latencyMs, "", err
 	}
 
@@ -537,6 +572,32 @@ func (p *TavilyProxy) tryKey(ctx context.Context, keyID uint, tavilyKey string, 
 		Body:           body,
 		ProxyRequestID: proxyReqID,
 	}, upstreamResp.StatusCode, latencyMs, requestID, nil
+}
+
+// A submitted billable request may have completed even when its response was lost.
+// Retrying it with another key can create and charge for a second operation.
+type upstreamResultUnknownError struct{ error }
+
+func (e *upstreamResultUnknownError) Error() string {
+	return "upstream request was submitted but its result is unknown; not retried: " + e.error.Error()
+}
+
+func (e *upstreamResultUnknownError) Unwrap() error { return e.error }
+
+func (p *TavilyProxy) requestTimeout(req ProxyRequest) time.Duration {
+	timeout := p.client.Timeout
+	if timeout == 0 || (req.Path != "/crawl" && req.Path != "/map") {
+		return timeout
+	}
+	seconds := 150.0
+	var body struct {
+		Timeout *float64 `json:"timeout"`
+	}
+	if json.Unmarshal(req.Body, &body) == nil && body.Timeout != nil && *body.Timeout >= 10 && *body.Timeout <= 150 {
+		seconds = *body.Timeout
+	}
+	// Allow the endpoint's processing budget plus transport overhead.
+	return max(timeout, time.Duration(seconds*float64(time.Second))+10*time.Second)
 }
 
 func copyHeaders(dst http.Header, src http.Header) {

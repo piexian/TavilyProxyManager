@@ -2,7 +2,7 @@
 
 简体中文 | [English](./README_EN.md)
 
-一个透明的 Tavily API 反向代理：将多个 Tavily API Key（额度/credits）汇聚在一个 **Master Key** 之后，并提供内置 Web UI 用于管理 Key、用量与请求日志。
+一个透明的 Tavily API 反向代理：将多个 Tavily API Key（额度/credits）汇聚在一个 **Master Key** 之后，通过智能路由与自动故障切换对外提供统一入口；并配备一个现代化的可视化管理面板，用于管理 Key、监控用量与排查请求日志。
 
 ---
 
@@ -40,7 +40,6 @@
 创建 `docker-compose.yml` 文件：
 
 ```yaml
-version: "3.8"
 services:
   tavily-proxy:
     image: ghcr.io/xuncv/tavilyproxymanager:latest
@@ -188,11 +187,13 @@ curl -X POST "http://localhost:8080/search" \
 | 变量名             | 说明                 | 默认值                   |
 | :----------------- | :------------------- | :----------------------- |
 | `LISTEN_ADDR`      | 服务监听地址         | `:8080`                  |
-| `DATABASE_PATH`    | SQLite 数据库路径    | `/app/data/proxy.db`     |
+| `DATABASE_PATH` / `DB_PATH`    | SQLite 数据库路径    | `./server/data/app.db`     |
 | `TAVILY_BASE_URL`  | 上游 Tavily API 地址 | `https://api.tavily.com` |
 | `UPSTREAM_TIMEOUT` | 上游请求超时时间     | `150s`                   |
 | `MCP_STATELESS`    | MCP 是否无状态模式   | `true`                   |
 | `MCP_SESSION_TTL`  | MCP 会话空闲超时     | `10m`                    |
+| `PORT`             | HTTP 监听端口，仅在未设置 `LISTEN_ADDR` 时生效 | `8080`                   |
+| `LOG_LEVEL`        | 日志级别             | `info`                   |
 
 ---
 

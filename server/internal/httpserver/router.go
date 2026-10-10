@@ -119,6 +119,18 @@ func NewRouter(deps Dependencies) http.Handler {
 		publicLimited.POST("/donate/query", func(c *gin.Context) { handleQueryDonation(c, deps.KeyService) })
 	}
 
+	// 捐赠者自助门户：凭访问密钥（捐赠时签发）鉴权，仅能操作自己名下的数据。
+	portal := r.Group("/api/portal", accessKeyAuthMiddleware(deps.AccessKeyService))
+	{
+		portal.GET("/me", func(c *gin.Context) { handlePortalMe(c, deps.AccessKeyService) })
+		portal.GET("/overview", func(c *gin.Context) { handlePortalOverview(c, deps.KeyService, deps.LogService) })
+		portal.GET("/timeseries", func(c *gin.Context) { handlePortalTimeSeries(c, deps.KeyService, deps.StatsService) })
+		portal.GET("/keys", func(c *gin.Context) { handlePortalListKeys(c, deps.KeyService) })
+		portal.POST("/keys", func(c *gin.Context) { handlePortalAddKeys(c, deps.KeyService, deps.TavilyProxy) })
+		portal.DELETE("/keys/:id", func(c *gin.Context) { handlePortalDeleteKey(c, deps.KeyService, c.Param("id")) })
+		portal.POST("/reset-key", func(c *gin.Context) { handlePortalResetKey(c, deps.AccessKeyService) })
+	}
+
 	r.NoRoute(func(c *gin.Context) {
 		if strings.HasPrefix(c.Request.URL.Path, "/api/") || c.Request.URL.Path == "/api" {
 			c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
@@ -177,6 +189,35 @@ func masterAuthMiddleware(master *services.MasterKeyService) gin.HandlerFunc {
 			c.Abort()
 			return
 		}
+		c.Next()
+	}
+}
+
+// 捐赠者门户鉴权上下文键：由 accessKeyAuthMiddleware 写入，供门户处理器读取。
+const (
+	ctxAccessKeyID    = "portal_access_key_id"
+	ctxAccessKeyAlias = "portal_access_key_alias"
+)
+
+// accessKeyAuthMiddleware 用捐赠者访问密钥鉴权（区别于 masterAuthMiddleware 的 Master Key）。
+// AccessKeyService.Authenticate 只匹配活跃 access key 缓存，停用/未知/重置后的旧 token 一律 401。
+func accessKeyAuthMiddleware(svc *services.AccessKeyService) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ak, ok := svc.Authenticate(parseBearerToken(c.GetHeader("Authorization")))
+		if !ok {
+			respondUnauthorized(c)
+			c.Abort()
+			return
+		}
+		// 管理员可单独关闭某访问密钥的「门户登录」，但保留其 API/MCP 调用能力。
+		// 代理（NoRoute）与 MCP 复用同一个 Authenticate 且不检查此字段，故不受影响。
+		if ak.LoginDisabled {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "login_disabled"})
+			c.Abort()
+			return
+		}
+		c.Set(ctxAccessKeyID, ak.ID)
+		c.Set(ctxAccessKeyAlias, ak.Alias)
 		c.Next()
 	}
 }
@@ -444,8 +485,31 @@ func handleDonateKeys(c *gin.Context, keys *services.KeyService, proxy *services
 	}
 
 	ctx := c.Request.Context()
+
+	// 别名重名校验：alias 全局唯一（去空格、忽略大小写）。重名直接拒绝，
+	// 避免归属混淆，并堵住"用已存在 alias 再次捐赠会拿回他人访问密钥"的泄露风险。
+	if accessKeys != nil {
+		taken, err := accessKeys.AliasExists(ctx, alias, 0)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+			return
+		}
+		if taken {
+			c.JSON(http.StatusConflict, gin.H{"error": "alias_taken"})
+			return
+		}
+	}
+	if taken, err := keys.UnownedDonationAliasExists(ctx, alias); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	} else if taken {
+		c.JSON(http.StatusConflict, gin.H{"error": "alias_taken"})
+		return
+	}
+
 	items := make([]donationItem, 0, len(body.Keys))
 	var created, duplicated, invalid, activated int
+	var createdIDs []uint
 
 	for _, raw := range body.Keys {
 		key := strings.TrimSpace(raw)
@@ -459,13 +523,13 @@ func handleDonateKeys(c *gin.Context, keys *services.KeyService, proxy *services
 			continue
 		}
 
-		record, isCreated, err := keys.DonateKey(ctx, key, alias)
+		existing, err := keys.QueryByKey(ctx, key)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "create_failed"})
 			return
 		}
 
-		if !isCreated {
+		if existing != nil {
 			duplicated++
 			items = append(items, donationItem{
 				KeyMasked: util.MaskAPIKey(key),
@@ -474,12 +538,9 @@ func handleDonateKeys(c *gin.Context, keys *services.KeyService, proxy *services
 			})
 			continue
 		}
-
-		// Auto-test: validate the key against Tavily /usage
+		// Validate before persisting so a temporary failure does not prevent retry.
 		usage, limit, testErr := proxy.GetUsage(ctx, key)
 		if testErr != nil {
-			// Key is invalid - mark it
-			_ = keys.MarkInvalid(ctx, record.ID)
 			invalid++
 			items = append(items, donationItem{
 				KeyMasked: util.MaskAPIKey(key),
@@ -488,6 +549,17 @@ func handleDonateKeys(c *gin.Context, keys *services.KeyService, proxy *services
 			})
 			continue
 		}
+		record, isCreated, err := keys.DonateKey(ctx, key, alias)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "create_failed"})
+			return
+		}
+		if !isCreated {
+			duplicated++
+			items = append(items, donationItem{KeyMasked: util.MaskAPIKey(key), Alias: alias, Status: "duplicated"})
+			continue
+		}
+		createdIDs = append(createdIDs, record.ID)
 
 		// Key is valid - activate and update quota
 		totalQuota := 1000
@@ -514,19 +586,15 @@ func handleDonateKeys(c *gin.Context, keys *services.KeyService, proxy *services
 		"items":      items,
 	}
 
-	// Generate an access key for the donor if any keys were activated
+	// 生成捐赠者访问密钥（alias 已校验唯一，故直接新建），并把本次新建的 Key 归属到它。
 	if activated > 0 && accessKeys != nil {
-		// Reuse existing access key for the same alias; create only if none exists.
-		existing, _ := accessKeys.FindByAlias(ctx, alias)
-		if existing != nil {
-			resp["access_key"] = existing.Key
-			resp["access_key_alias"] = existing.Alias
-		} else {
-			ak, err := accessKeys.Create(ctx, alias)
-			if err == nil {
-				resp["access_key"] = ak.Key
-				resp["access_key_alias"] = ak.Alias
+		ak, err := accessKeys.Create(ctx, alias)
+		if err == nil {
+			for _, kid := range createdIDs {
+				_ = keys.SetAccessKeyID(ctx, kid, ak.ID)
 			}
+			resp["access_key"] = ak.Key
+			resp["access_key_alias"] = ak.Alias
 		}
 	}
 
@@ -1168,12 +1236,13 @@ func handleListAccessKeys(c *gin.Context, svc *services.AccessKeyService) {
 	}
 
 	type dto struct {
-		ID         uint    `json:"id"`
-		KeyMasked  string  `json:"key"`
-		Alias      string  `json:"alias"`
-		IsActive   bool    `json:"is_active"`
-		LastUsedAt *string `json:"last_used_at"`
-		CreatedAt  string  `json:"created_at"`
+		ID            uint    `json:"id"`
+		KeyMasked     string  `json:"key"`
+		Alias         string  `json:"alias"`
+		IsActive      bool    `json:"is_active"`
+		LoginDisabled bool    `json:"login_disabled"`
+		LastUsedAt    *string `json:"last_used_at"`
+		CreatedAt     string  `json:"created_at"`
 	}
 	out := make([]dto, 0, len(items))
 	for _, k := range items {
@@ -1183,12 +1252,13 @@ func handleListAccessKeys(c *gin.Context, svc *services.AccessKeyService) {
 			lastUsed = &v
 		}
 		out = append(out, dto{
-			ID:         k.ID,
-			KeyMasked:  util.MaskAPIKey(k.Key),
-			Alias:      k.Alias,
-			IsActive:   k.IsActive,
-			LastUsedAt: lastUsed,
-			CreatedAt:  k.CreatedAt.Format(time.RFC3339),
+			ID:            k.ID,
+			KeyMasked:     util.MaskAPIKey(k.Key),
+			Alias:         k.Alias,
+			IsActive:      k.IsActive,
+			LoginDisabled: k.LoginDisabled,
+			LastUsedAt:    lastUsed,
+			CreatedAt:     k.CreatedAt.Format(time.RFC3339),
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"items": out})
@@ -1204,6 +1274,13 @@ func handleCreateAccessKey(c *gin.Context, svc *services.AccessKeyService) {
 	}
 	if strings.TrimSpace(body.Alias) == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing_alias"})
+		return
+	}
+	if taken, err := svc.AliasExists(c.Request.Context(), body.Alias, 0); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	} else if taken {
+		c.JSON(http.StatusConflict, gin.H{"error": "alias_taken"})
 		return
 	}
 	created, err := svc.Create(c.Request.Context(), strings.TrimSpace(body.Alias))
@@ -1233,6 +1310,15 @@ func handleUpdateAccessKey(c *gin.Context, svc *services.AccessKeyService, idStr
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
 		return
 	}
+	if body.Alias != nil {
+		if taken, err := svc.AliasExists(c.Request.Context(), *body.Alias, uint(id)); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+			return
+		} else if taken {
+			c.JSON(http.StatusConflict, gin.H{"error": "alias_taken"})
+			return
+		}
+	}
 	updated, err := svc.Update(c.Request.Context(), uint(id), body)
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "update_failed"})
@@ -1240,10 +1326,11 @@ func handleUpdateAccessKey(c *gin.Context, svc *services.AccessKeyService, idStr
 	}
 	c.JSON(http.StatusOK, gin.H{
 		"item": gin.H{
-			"id":        updated.ID,
-			"key":       util.MaskAPIKey(updated.Key),
-			"alias":     updated.Alias,
-			"is_active": updated.IsActive,
+			"id":             updated.ID,
+			"key":            util.MaskAPIKey(updated.Key),
+			"alias":          updated.Alias,
+			"is_active":      updated.IsActive,
+			"login_disabled": updated.LoginDisabled,
 		},
 	})
 }
@@ -1273,4 +1360,250 @@ func handleGetAccessKeyRaw(c *gin.Context, svc *services.AccessKeyService, idStr
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"key": raw})
+}
+
+// ---- 捐赠者门户处理器（鉴权由 accessKeyAuthMiddleware 完成）----
+
+// handlePortalMe 返回当前捐赠者的基本信息，同时兼作前端登录探针。
+func handlePortalMe(c *gin.Context, svc *services.AccessKeyService) {
+	ak, err := svc.FindByID(c.Request.Context(), c.GetUint(ctxAccessKeyID))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+	if ak == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+		return
+	}
+	var lastUsed *string
+	if ak.LastUsedAt != nil {
+		v := ak.LastUsedAt.Format(time.RFC3339)
+		lastUsed = &v
+	}
+	c.JSON(http.StatusOK, gin.H{
+		"alias":        ak.Alias,
+		"key":          util.MaskAPIKey(ak.Key),
+		"is_active":    ak.IsActive,
+		"last_used_at": lastUsed,
+		"created_at":   ak.CreatedAt.Format(time.RFC3339),
+	})
+}
+
+// handlePortalOverview 汇总该捐赠者名下 Key 的额度用量，以及他本人发起的请求数（今日/累计）。
+func handlePortalOverview(c *gin.Context, keys *services.KeyService, logs *services.LogService) {
+	ctx := c.Request.Context()
+	id := c.GetUint(ctxAccessKeyID)
+
+	summary, err := keys.DonatedSummaryByAccessKey(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+
+	now := time.Now()
+	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
+	todayRequests, err := logs.CountByAccessKey(ctx, id, &startOfDay)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+	totalRequests, err := logs.CountByAccessKey(ctx, id, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"total_quota":    summary.TotalQuota,
+		"used_quota":     summary.TotalUsed,
+		"remaining":      summary.TotalRemaining,
+		"key_count":      summary.ActiveKeyCount,
+		"today_requests": todayRequests,
+		"total_requests": totalRequests,
+	})
+}
+
+// handlePortalTimeSeries 返回该捐赠者的双系列时序（名下 Key 被调用 / 本人发起请求）。
+func handlePortalTimeSeries(c *gin.Context, keys *services.KeyService, stats *services.StatsService) {
+	ctx := c.Request.Context()
+	id := c.GetUint(ctxAccessKeyID)
+
+	owned, err := keys.ListByAccessKey(ctx, id)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+	ids := make([]uint, 0, len(owned))
+	for _, k := range owned {
+		ids = append(ids, k.ID)
+	}
+
+	out, err := stats.PortalTimeSeries(ctx, c.Query("granularity"), id, ids)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_granularity"})
+		return
+	}
+	c.JSON(http.StatusOK, out)
+}
+
+// handlePortalListKeys 列出该捐赠者名下的全部 Key（掩码）。
+func handlePortalListKeys(c *gin.Context, keys *services.KeyService) {
+	items, err := keys.ListByAccessKey(c.Request.Context(), c.GetUint(ctxAccessKeyID))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+
+	type keyDTO struct {
+		ID         uint    `json:"id"`
+		KeyMasked  string  `json:"key"`
+		Alias      string  `json:"alias"`
+		TotalQuota int     `json:"total_quota"`
+		UsedQuota  int     `json:"used_quota"`
+		IsActive   bool    `json:"is_active"`
+		IsInvalid  bool    `json:"is_invalid"`
+		IsDonated  bool    `json:"is_donated"`
+		LastUsedAt *string `json:"last_used_at"`
+		CreatedAt  string  `json:"created_at"`
+	}
+	out := make([]keyDTO, 0, len(items))
+	for _, k := range items {
+		var lastUsed *string
+		if k.LastUsedAt != nil {
+			v := k.LastUsedAt.Format(time.RFC3339)
+			lastUsed = &v
+		}
+		out = append(out, keyDTO{
+			ID:         k.ID,
+			KeyMasked:  util.MaskAPIKey(k.Key),
+			Alias:      k.Alias,
+			TotalQuota: k.TotalQuota,
+			UsedQuota:  k.UsedQuota,
+			IsActive:   k.IsActive,
+			IsInvalid:  k.IsInvalid,
+			IsDonated:  k.IsDonated,
+			LastUsedAt: lastUsed,
+			CreatedAt:  k.CreatedAt.Format(time.RFC3339),
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"items": out})
+}
+
+// handlePortalAddKeys 让捐赠者把更多 Tavily Key 加到自己名下（复用捐赠校验/激活流程）。
+func handlePortalAddKeys(c *gin.Context, keys *services.KeyService, proxy *services.TavilyProxy) {
+	id := c.GetUint(ctxAccessKeyID)
+	alias := c.GetString(ctxAccessKeyAlias)
+
+	var body struct {
+		Keys []string `json:"keys"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
+		return
+	}
+	if len(body.Keys) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing_keys"})
+		return
+	}
+	if len(body.Keys) > 20 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "too_many_keys"})
+		return
+	}
+
+	type donationItem struct {
+		KeyMasked string `json:"key_masked"`
+		Alias     string `json:"alias"`
+		Status    string `json:"status"`
+	}
+	ctx := c.Request.Context()
+	items := make([]donationItem, 0, len(body.Keys))
+	var created, duplicated, invalid, activated int
+
+	for _, raw := range body.Keys {
+		key := strings.TrimSpace(raw)
+		if !donateKeyPattern.MatchString(key) {
+			invalid++
+			items = append(items, donationItem{KeyMasked: util.MaskAPIKey(key), Alias: alias, Status: "invalid"})
+			continue
+		}
+
+		existing, err := keys.QueryByKey(ctx, key)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "create_failed"})
+			return
+		}
+		if existing != nil {
+			duplicated++
+			items = append(items, donationItem{KeyMasked: util.MaskAPIKey(key), Alias: alias, Status: "duplicated"})
+			continue
+		}
+
+		usage, limit, testErr := proxy.GetUsage(ctx, key)
+		if testErr != nil {
+			invalid++
+			items = append(items, donationItem{KeyMasked: util.MaskAPIKey(key), Alias: alias, Status: "invalid_key"})
+			continue
+		}
+		record, isCreated, err := keys.DonateKeyForAccessKey(ctx, key, alias, id)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "create_failed"})
+			return
+		}
+		if !isCreated {
+			duplicated++
+			items = append(items, donationItem{KeyMasked: util.MaskAPIKey(key), Alias: alias, Status: "duplicated"})
+			continue
+		}
+		totalQuota := 1000
+		if limit != nil && *limit > 0 {
+			totalQuota = *limit
+		}
+		_ = keys.SetUsage(ctx, record.ID, usage, &totalQuota)
+		_ = keys.ActivateKey(ctx, record.ID)
+		created++
+		activated++
+		items = append(items, donationItem{KeyMasked: util.MaskAPIKey(key), Alias: alias, Status: "created"})
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"total":      len(body.Keys),
+		"created":    created,
+		"duplicated": duplicated,
+		"invalid":    invalid,
+		"activated":  activated,
+		"items":      items,
+	})
+}
+
+// handlePortalDeleteKey 删除捐赠者名下的某个 Key；非己 Key 返回 403。
+func handlePortalDeleteKey(c *gin.Context, keys *services.KeyService, idStr string) {
+	keyID, err := parseUintParam(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_id"})
+		return
+	}
+	owned, err := keys.FindOwnedByID(c.Request.Context(), c.GetUint(ctxAccessKeyID), uint(keyID))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
+		return
+	}
+	if owned == nil {
+		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		return
+	}
+	if err := keys.Delete(c.Request.Context(), uint(keyID)); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "delete_failed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"ok": true})
+}
+
+// handlePortalResetKey 轮换当前捐赠者的访问密钥，旧 token 立即失效，返回新 token（仅此一次可见）。
+func handlePortalResetKey(c *gin.Context, svc *services.AccessKeyService) {
+	token, err := svc.ResetKey(c.Request.Context(), c.GetUint(ctxAccessKeyID))
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "reset_failed"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"access_key": token})
 }

@@ -74,13 +74,17 @@ func TestTavilyProxy_ForbiddenHandled(t *testing.T) {
 		t.Fatalf("status = %d, want %d (body=%q)", resp.StatusCode, http.StatusOK, string(resp.Body))
 	}
 
-	// The forbidden key should have been marked exhausted
+	// 403 只表示功能权限不足（如付费端点），不代表额度耗尽：
+	// 该 Key 应仍在候选池中，used_quota 不被改写。
 	var forbiddenKey models.APIKey
 	if err := database.First(&forbiddenKey, forbidden.ID).Error; err != nil {
 		t.Fatalf("find forbidden key: %v", err)
 	}
-	if forbiddenKey.UsedQuota != forbiddenKey.TotalQuota {
-		t.Errorf("forbidden key used_quota = %d, want %d (should be marked exhausted)", forbiddenKey.UsedQuota, forbiddenKey.TotalQuota)
+	if forbiddenKey.UsedQuota != 0 {
+		t.Errorf("forbidden key used_quota = %d, want 0 (403 must not mark the key exhausted)", forbiddenKey.UsedQuota)
+	}
+	if !forbiddenKey.IsActive {
+		t.Errorf("forbidden key is_active = false, want true")
 	}
 
 	// The ok key should have been incremented by 1 (basic search)

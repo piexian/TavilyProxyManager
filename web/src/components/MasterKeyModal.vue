@@ -146,7 +146,7 @@ function onSubmit() {
 }
 
 .auth-icon {
-  color: #18a058;
+  color: #0ea5e9;
   margin-bottom: 8px;
 }
 

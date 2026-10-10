@@ -133,6 +133,10 @@
             </n-button>
           </div>
           <div class="access-key-warning">{{ t("donate.result.accessKeyWarning") }}</div>
+          <div class="access-key-hint">{{ t("donate.result.loginHint") }}</div>
+          <div class="access-key-hint access-key-hint--strong">
+            {{ t("donate.result.safeguardHint") }}
+          </div>
         </div>
 
         <div class="result-table">
@@ -305,6 +309,11 @@ async function handleDonate() {
   } catch (err: any) {
     if (err.response?.status === 429) {
       message.error(t("donate.rateLimited"));
+    } else if (
+      err.response?.status === 409 &&
+      err.response?.data?.error === "alias_taken"
+    ) {
+      message.error(t("donate.aliasTaken"));
     } else {
       message.error(t("common.createFailed"));
     }
@@ -325,6 +334,11 @@ async function handleQuery() {
   } catch (err: any) {
     if (err.response?.status === 429) {
       message.error(t("donate.rateLimited"));
+    } else if (
+      err.response?.status === 409 &&
+      err.response?.data?.error === "alias_taken"
+    ) {
+      message.error(t("donate.aliasTaken"));
     } else {
       message.error(t("common.createFailed"));
     }
@@ -366,8 +380,10 @@ onBeforeUnmount(() => {
 .key-donation {
   margin-top: 40px;
   padding: 32px;
-  border: 1px solid rgba(128, 128, 128, 0.2);
-  border-radius: 16px;
+  border: 2px solid var(--comic-ink);
+  border-radius: 14px;
+  box-shadow: var(--comic-shadow);
+  background: var(--comic-surface);
 }
 
 .donation-header {
@@ -488,8 +504,10 @@ onBeforeUnmount(() => {
 
 /* Modal */
 .result-modal {
-  background: var(--n-color);
-  border-radius: 12px;
+  background: var(--comic-surface);
+  border: 2px solid var(--comic-ink);
+  box-shadow: var(--comic-shadow-lg);
+  border-radius: 14px;
   padding: 32px;
   width: 600px;
   max-width: 90vw;
@@ -568,6 +586,18 @@ onBeforeUnmount(() => {
   color: var(--n-warning-color);
   margin-top: 8px;
   font-weight: 500;
+}
+
+.access-key-hint {
+  font-size: 12.5px;
+  color: var(--n-text-color-3);
+  line-height: 1.6;
+  margin-top: 10px;
+}
+
+.access-key-hint--strong {
+  color: var(--n-text-color-2);
+  font-weight: 600;
 }
 
 .result-table {

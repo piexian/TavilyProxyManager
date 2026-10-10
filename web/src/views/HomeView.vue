@@ -282,9 +282,9 @@ onMounted(() => {
   gap: 8px;
   padding: 6px 12px;
   background-color: var(--n-code-color);
-  border-radius: 20px;
+  border-radius: 999px;
   font-size: 13px;
-  border: 1px solid var(--n-border-color);
+  border: 2px solid var(--comic-ink);
 }
 
 .endpoint-badge .label {
@@ -304,28 +304,22 @@ onMounted(() => {
 
 .section-card {
   padding: 28px;
-  border: 1px solid rgba(128, 128, 128, 0.2);
-  border-radius: 16px;
+  border: 2px solid var(--comic-ink);
+  border-radius: 14px;
+  box-shadow: var(--comic-shadow);
+  background: var(--comic-surface);
   margin-bottom: 32px;
 }
 
 .quota-card {
   position: relative;
   overflow: hidden;
-  background:
-    radial-gradient(circle at top right, rgba(99, 102, 241, 0.16), transparent 32%),
-    radial-gradient(circle at bottom left, rgba(14, 165, 233, 0.12), transparent 30%),
-    linear-gradient(180deg, rgba(99, 102, 241, 0.05), rgba(99, 102, 241, 0.015));
+  background: linear-gradient(rgba(14, 165, 233, 0.08), rgba(14, 165, 233, 0.08)),
+    var(--comic-surface);
 }
 
 .quota-card::after {
-  content: "";
-  position: absolute;
-  inset: auto -10% -55% auto;
-  width: 220px;
-  height: 220px;
-  background: radial-gradient(circle, rgba(129, 140, 248, 0.18), transparent 68%);
-  pointer-events: none;
+  display: none;
 }
 
 .quota-card-top {
@@ -358,29 +352,27 @@ onMounted(() => {
   flex-shrink: 0;
   padding: 8px 12px;
   border-radius: 999px;
-  border: 1px solid rgba(99, 102, 241, 0.16);
-  background: rgba(99, 102, 241, 0.1);
+  border: 2px solid var(--comic-ink);
+  background: rgba(14, 165, 233, 0.12);
   color: var(--n-primary-color);
   font-size: 12px;
   font-weight: 700;
+  box-shadow: var(--comic-shadow-press);
 }
 
 .quota-pill-muted {
   color: var(--n-text-color-3);
-  background: rgba(128, 128, 128, 0.08);
-  border-color: rgba(128, 128, 128, 0.18);
+  background: rgba(128, 128, 128, 0.1);
+  border-color: var(--comic-ink);
 }
 
 .quota-progress-panel {
   position: relative;
   z-index: 1;
   padding: 18px;
-  border-radius: 14px;
-  border: 1px solid rgba(128, 128, 128, 0.16);
-  background:
-    linear-gradient(180deg, rgba(99, 102, 241, 0.04), rgba(99, 102, 241, 0)),
-    var(--n-color);
-  backdrop-filter: blur(14px);
+  border-radius: 12px;
+  border: 2px solid var(--comic-ink);
+  background: var(--comic-surface);
 }
 
 .quota-progress-header {
@@ -414,9 +406,9 @@ onMounted(() => {
 
 .quota-mini {
   padding: 12px 14px;
-  border-radius: 12px;
-  border: 1px solid rgba(128, 128, 128, 0.16);
-  background: rgba(99, 102, 241, 0.05);
+  border-radius: 10px;
+  border: 2px solid var(--comic-ink);
+  background: rgba(14, 165, 233, 0.07);
 }
 
 .quota-mini--accent {
@@ -458,29 +450,23 @@ onMounted(() => {
 
 .quota-progress-track {
   position: relative;
-  height: 16px;
-  border-radius: 999px;
-  background: rgba(99, 102, 241, 0.08);
+  height: 18px;
+  border-radius: 8px;
+  background: rgba(14, 165, 233, 0.1);
   overflow: hidden;
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.06);
+  border: 2px solid var(--comic-ink);
 }
 
 .quota-progress-fill {
   position: relative;
   height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #10b981 0%, #34d399 48%, #60a5fa 100%);
+  border-radius: 4px;
+  background: #22c55e;
   transition: width 0.35s ease;
 }
 
 .quota-progress-glow {
-  position: absolute;
-  inset: 2px auto 2px 12px;
-  width: 36%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, rgba(255, 255, 255, 0.45), rgba(255, 255, 255, 0));
-  mix-blend-mode: screen;
-  pointer-events: none;
+  display: none;
 }
 
 .quota-progress-foot {

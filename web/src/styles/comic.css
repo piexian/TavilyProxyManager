@@ -1,0 +1,195 @@
+/* ============================================================
+   Clean Comic 清爽漫画风 — 全局样式层
+   策略：themeOverrides 管调色板/字体/圆角；本文件管「描边 + 硬偏移阴影」
+   这类 Naive 无 token 的视觉，用 [data-theme] 属性选择器提升特异性盖过 Naive 注入样式。
+   data-theme 在 main.ts 于挂载前写入 <html>，避免 FOUC。
+   ============================================================ */
+
+/* ---------- 自托管漫画字体（Latin 子集，中文走 CJK 回退） ---------- */
+/* Baloo 2 是可变字体：单文件覆盖 400–800 字重轴 */
+@font-face {
+  font-family: "Baloo 2";
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url("../assets/fonts/baloo2.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Comic Neue";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("../assets/fonts/comic-neue-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Comic Neue";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("../assets/fonts/comic-neue-700.woff2") format("woff2");
+}
+
+/* ---------- 设计令牌 ---------- */
+:root {
+  --comic-font-body: "Comic Neue", "Baloo 2", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+  --comic-font-display: "Baloo 2", "Comic Neue", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", system-ui, -apple-system, sans-serif;
+
+  --comic-ink: #12263a;
+  --comic-bg: #f0f9ff;
+  --comic-surface: #ffffff;
+
+  --comic-accent: #0ea5e9;
+  --comic-accent-2: #1d4ed8;
+  --comic-teal: #06b6d4;
+  --comic-yellow: #facc15;
+  --comic-pink: #ec4899;
+  --comic-green: #22c55e;
+
+  --comic-border: 2px;
+  --comic-radius: 12px;
+  --comic-shadow: 4px 4px 0 var(--comic-ink);
+  --comic-shadow-sm: 3px 3px 0 var(--comic-ink);
+  --comic-shadow-lg: 6px 6px 0 var(--comic-ink);
+  --comic-shadow-press: 1px 1px 0 var(--comic-ink);
+}
+
+[data-theme="dark"] {
+  --comic-ink: #04111f;
+  --comic-bg: #0f172a;
+  --comic-surface: #1e293b;
+}
+
+/* ---------- 基础排版 ---------- */
+[data-theme] body {
+  font-family: var(--comic-font-body);
+  background-color: var(--comic-bg);
+}
+
+[data-theme] h1,
+[data-theme] h2,
+[data-theme] h3,
+[data-theme] h4,
+[data-theme] h5,
+[data-theme] h6,
+[data-theme] .page-title,
+[data-theme] .panel-title,
+[data-theme] .n-card-header__main,
+[data-theme] .n-statistic-value {
+  font-family: var(--comic-font-display);
+  font-weight: 700;
+}
+
+/* ---------- 卡片：粗描边 + 硬阴影 ---------- */
+[data-theme] .n-card {
+  border: var(--comic-border) solid var(--comic-ink);
+  border-radius: var(--comic-radius);
+  box-shadow: var(--comic-shadow);
+}
+/* 弹窗内的卡片（preset=card）阴影更大一点 */
+[data-theme] .n-modal .n-card,
+[data-theme] .n-card.n-modal {
+  box-shadow: var(--comic-shadow-lg);
+}
+
+/* ---------- 按钮：实心按钮加描边 + 硬阴影 + 按压位移；图标/文字按钮不动 ---------- */
+[data-theme] .n-button:not(.n-button--quaternary):not(.n-button--text):not(.n-button--circle) {
+  border: var(--comic-border) solid var(--comic-ink);
+  box-shadow: var(--comic-shadow-sm);
+  font-weight: 700;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+[data-theme] .n-button:not(.n-button--quaternary):not(.n-button--text):not(.n-button--circle):hover {
+  transform: translate(-1px, -1px);
+  box-shadow: var(--comic-shadow);
+}
+[data-theme] .n-button:not(.n-button--quaternary):not(.n-button--text):not(.n-button--circle):active {
+  transform: translate(1px, 1px);
+  box-shadow: var(--comic-shadow-press);
+}
+[data-theme] .n-button.n-button--disabled {
+  box-shadow: none;
+  transform: none;
+}
+
+/* ---------- 输入 / 选择器：聚焦时 ink 描边 ---------- */
+[data-theme] .n-input,
+[data-theme] .n-base-selection {
+  border-radius: 10px;
+}
+[data-theme] .n-input .n-input__border,
+[data-theme] .n-input .n-input__state-border,
+[data-theme] .n-base-selection .n-base-selection__border,
+[data-theme] .n-base-selection .n-base-selection__state-border {
+  border-width: var(--comic-border);
+  border-radius: 10px;
+}
+
+/* ---------- 数据表格：粗表头线 + 行分隔 ---------- */
+[data-theme] .n-data-table .n-data-table-thead {
+  border-bottom: var(--comic-border) solid var(--comic-ink);
+}
+[data-theme] .n-data-table .n-data-table-th {
+  font-family: var(--comic-font-display);
+  font-weight: 700;
+}
+
+/* ---------- 标签 Tag：小描边 + 圆角 ---------- */
+[data-theme] .n-tag {
+  border: 1.5px solid var(--comic-ink);
+  font-weight: 700;
+}
+
+/* ---------- 菜单激活项：实色 chip ---------- */
+[data-theme] .n-menu .n-menu-item-content.n-menu-item-content--selected {
+  font-weight: 700;
+}
+
+/* ---------- 分段 Tabs（segment）：描边导轨 + 选中硬阴影 ---------- */
+[data-theme] .n-tabs.n-tabs--segment-type .n-tabs-rail {
+  border: var(--comic-border) solid var(--comic-ink);
+  border-radius: 10px;
+  padding: 3px;
+}
+[data-theme] .n-tabs.n-tabs--segment-type .n-tabs-tab.n-tabs-tab--active {
+  border: 1.5px solid var(--comic-ink);
+  box-shadow: var(--comic-shadow-press);
+  font-weight: 700;
+}
+
+/* ---------- 进度条：ink 描边、方头 ---------- */
+[data-theme] .n-progress .n-progress-graph-line-rail,
+[data-theme] .n-progress .n-progress-graph-line-fill {
+  border-radius: 6px;
+}
+
+/* ---------- 下拉 / 气泡：描边 + 硬阴影 ---------- */
+[data-theme] .n-dropdown-menu,
+[data-theme] .n-popover:not(.n-tooltip),
+[data-theme] .n-popselect-menu {
+  border: var(--comic-border) solid var(--comic-ink);
+  box-shadow: var(--comic-shadow);
+}
+
+/* ---------- 滚动条漫画化 ---------- */
+[data-theme] ::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+[data-theme] ::-webkit-scrollbar-thumb {
+  background: var(--comic-accent);
+  border: 2px solid var(--comic-ink);
+  border-radius: 8px;
+}
+[data-theme="dark"] ::-webkit-scrollbar-thumb {
+  background: #38bdf8;
+}
+
+/* ---------- 降噪：尊重 prefers-reduced-motion ---------- */
+@media (prefers-reduced-motion: reduce) {
+  [data-theme] .n-button:not(.n-button--quaternary):not(.n-button--text):not(.n-button--circle):hover,
+  [data-theme] .n-button:not(.n-button--quaternary):not(.n-button--text):not(.n-button--circle):active {
+    transform: none;
+  }
+}

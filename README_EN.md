@@ -2,7 +2,7 @@
 
 简体中文 | English
 
-A transparent reverse proxy for the Tavily API that aggregates multiple Tavily API Keys into a single **Master Key**. It features a built-in Web UI for managing keys, monitoring usage, and inspecting request logs.
+A transparent reverse proxy for the Tavily API that aggregates multiple Tavily API Keys behind a single **Master Key**, exposing them through one unified endpoint with intelligent routing and automatic failover. It ships with a modern, visual management dashboard for managing keys, monitoring usage, and inspecting request logs.
 
 ---
 
@@ -40,10 +40,9 @@ Deploy directly using the GHCR image, **no local compilation required**.
 Create a `docker-compose.yml` file:
 
 ```yaml
-version: "3.8"
 services:
   tavily-proxy:
-    image: ghcr.io/xuncv/tavilyproxymanager:main
+    image: ghcr.io/xuncv/tavilyproxymanager:latest
     container_name: tavily-proxy
     ports:
       - "8080:8080"
@@ -72,7 +71,7 @@ docker run -d \
   -p 8080:8080 \
   -v $(pwd)/data:/app/data \
   -e DATABASE_PATH=/app/data/proxy.db \
-  ghcr.io/xuncv/tavilyproxymanager:main
+  ghcr.io/xuncv/tavilyproxymanager:latest
 ```
 
 ---
@@ -188,11 +187,13 @@ If you need stateful sessions, set `MCP_STATELESS=false` and ensure your reverse
 | Variable           | Description              | Default                  |
 | :----------------- | :----------------------- | :----------------------- |
 | `LISTEN_ADDR`      | Server listening address | `:8080`                  |
-| `DATABASE_PATH`    | Path to SQLite database  | `/app/data/proxy.db`     |
+| `DATABASE_PATH` / `DB_PATH`    | Path to SQLite database  | `./server/data/app.db`     |
 | `TAVILY_BASE_URL`  | Upstream Tavily API URL  | `https://api.tavily.com` |
 | `UPSTREAM_TIMEOUT` | Upstream request timeout | `150s`                   |
 | `MCP_STATELESS`    | Enable stateless MCP mode | `true`                  |
 | `MCP_SESSION_TTL`  | Idle timeout for MCP session | `10m`               |
+| `PORT`             | HTTP listening port, used only when `LISTEN_ADDR` is unset | `8080` |
+| `LOG_LEVEL`        | Log level                | `info`                   |
 
 ---
 

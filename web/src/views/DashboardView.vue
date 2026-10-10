@@ -113,21 +113,41 @@
               </div>
             </div>
           </div>
-          <n-tabs
-            v-model:value="granularity"
-            type="segment"
-            size="small"
-            class="chart-tabs"
-          >
-            <n-tab-pane name="hour" :tab="t('dashboard.requestAnalytics.hour')" />
-            <n-tab-pane name="day" :tab="t('dashboard.requestAnalytics.day')" />
-            <n-tab-pane name="month" :tab="t('dashboard.requestAnalytics.month')" />
-          </n-tabs>
+          <div class="chart-controls">
+            <button
+              type="button"
+              class="chart-type-toggle"
+              :aria-label="t('portal.chartType.toggle')"
+              :title="t('portal.chartType.toggle')"
+              @click="toggleChartType"
+            >
+              <n-icon
+                :component="chartType === 'bar' ? BarChartOutline : TrendingUpOutline"
+              />
+              <span>{{
+                chartType === "bar"
+                  ? t("portal.chartType.bar")
+                  : t("portal.chartType.line")
+              }}</span>
+            </button>
+            <n-tabs
+              v-model:value="granularity"
+              type="segment"
+              size="small"
+              class="chart-tabs"
+            >
+              <n-tab-pane name="hour" :tab="t('dashboard.requestAnalytics.hour')" />
+              <n-tab-pane name="day" :tab="t('dashboard.requestAnalytics.day')" />
+              <n-tab-pane name="month" :tab="t('dashboard.requestAnalytics.month')" />
+            </n-tabs>
+          </div>
         </div>
 
-        <div class="chart-shell">
-          <div ref="chartEl" class="chart-canvas" />
-        </div>
+        <RequestChart
+          :timeseries="timeseries"
+          :chart-type="chartType"
+          :granularity="granularity"
+        />
       </n-card>
     </div>
   </n-space>
@@ -137,12 +157,10 @@
 import {
   computed,
   nextTick,
-  onBeforeUnmount,
   onMounted,
   ref,
   watch,
 } from "vue";
-import * as echarts from "echarts";
 import {
   NButton,
   NCard,
@@ -155,14 +173,17 @@ import {
   useMessage,
 } from "naive-ui";
 import {
+  BarChartOutline,
   BatteryFullOutline,
   CloudUploadOutline,
   KeyOutline,
   PulseOutline,
   RefreshOutline,
   ServerOutline,
+  TrendingUpOutline,
 } from "@vicons/ionicons5";
 import { api } from "../api/client";
+import RequestChart from "../components/RequestChart.vue";
 import type { Stats, TimeSeries } from "../types";
 import { locale, t } from "../i18n";
 
@@ -177,9 +198,11 @@ const stats = ref<Stats | null>(null);
 const cacheStats = ref<{ enabled: boolean; entry_count: number; total_hits: number; total_size_bytes: number } | null>(null);
 const timeseries = ref<TimeSeries | null>(null);
 const granularity = ref<"hour" | "day" | "month">("hour");
+const chartType = ref<"bar" | "line">("bar");
 
-const chartEl = ref<HTMLDivElement | null>(null);
-let chart: echarts.ECharts | null = null;
+function toggleChartType() {
+  chartType.value = chartType.value === "bar" ? "line" : "bar";
+}
 
 const numberFormatter = computed(
   () => new Intl.NumberFormat(locale.value === "zh-CN" ? "zh-CN" : "en-US"),
@@ -270,7 +293,6 @@ async function refreshTimeSeries() {
       params: { granularity: granularity.value },
     });
     timeseries.value = data;
-    renderChart();
   } catch (err: any) {
     message.error(err?.response?.data?.error ?? t("dashboard.errors.loadChart"));
   } finally {
@@ -278,144 +300,10 @@ async function refreshTimeSeries() {
   }
 }
 
-function ensureChart() {
-  if (!chartEl.value) return;
-  if (chart) return;
-  chart = echarts.init(chartEl.value);
-  window.addEventListener("resize", onResize);
-}
-
-function onResize() {
-  chart?.resize();
-}
-
 function localizeSeriesName(name: string): string {
   if (name === "All Requests") return t("dashboard.timeseries.allRequests");
   if (name === "Search") return t("dashboard.timeseries.search");
   return name;
-}
-
-function isDarkMode(): boolean {
-  return (
-    document.documentElement.classList.contains("dark") ||
-    localStorage.getItem("theme") === "dark"
-  );
-}
-
-function renderChart() {
-  ensureChart();
-  if (!chart || !timeseries.value) return;
-
-  const ts = timeseries.value;
-  const isDark = isDarkMode();
-  const primaryBarTop = "#818cf8";
-  const primaryBarBottom = "#6366f1";
-  const secondaryBarTop = "#34d399";
-  const secondaryBarBottom = "#10b981";
-  const textColor = isDark ? "#c7cad1" : "#697386";
-  const mutedTextColor = isDark ? "#8f96a3" : "#98a2b3";
-  const splitLineColor = isDark ? "rgba(255,255,255,0.08)" : "rgba(99,102,241,0.08)";
-  const shadowColor = isDark ? "rgba(255,255,255,0.04)" : "rgba(99,102,241,0.06)";
-
-  chart.setOption(
-    {
-      animationDuration: 450,
-      backgroundColor: "transparent",
-      tooltip: {
-        trigger: "axis",
-        axisPointer: {
-          type: "shadow",
-          shadowStyle: { color: shadowColor },
-        },
-        backgroundColor: isDark ? "#161b26" : "#ffffff",
-        borderWidth: 0,
-        textStyle: { color: isDark ? "#f5f7fb" : "#101828" },
-        extraCssText:
-          "box-shadow: 0 16px 40px rgba(15, 23, 42, 0.16); border-radius: 14px; padding: 10px 12px;",
-        formatter: (params: any) => {
-          const rows = Array.isArray(params) ? params : [params];
-          const title = rows[0]?.axisValueLabel ?? "";
-          return [
-            `<div style="margin-bottom:8px;font-weight:700;">${title}</div>`,
-            ...rows.map(
-              (row: any) =>
-                `${row.marker}<span style="display:inline-block;min-width:112px;">${row.seriesName}</span><strong>${formatNumber(Number(row.value ?? 0))}</strong>`,
-            ),
-          ].join("<br/>");
-        },
-      },
-      grid: { left: 12, right: 12, top: 18, bottom: 8, containLabel: true },
-      xAxis: {
-        type: "category",
-        data: ts.labels,
-        boundaryGap: true,
-        axisTick: { show: false },
-        axisLine: { show: false },
-        axisLabel: {
-          color: mutedTextColor,
-          margin: 12,
-          fontSize: 12,
-          hideOverlap: true,
-        },
-      },
-      yAxis: {
-        type: "value",
-        minInterval: 1,
-        splitNumber: 4,
-        axisLine: { show: false },
-        axisTick: { show: false },
-        axisLabel: {
-          color: mutedTextColor,
-          margin: 12,
-          fontSize: 12,
-        },
-        splitLine: {
-          lineStyle: {
-            color: splitLineColor,
-            type: "dashed",
-          },
-        },
-      },
-      series: ts.series.map((series, idx) => {
-        const localizedName = localizeSeriesName(series.name);
-        const gradient =
-          idx === 0
-            ? [primaryBarTop, primaryBarBottom]
-            : [secondaryBarTop, secondaryBarBottom];
-        const seriesShadow =
-          idx === 0
-            ? "rgba(99, 102, 241, 0.24)"
-            : "rgba(16, 185, 129, 0.24)";
-        return {
-          name: localizedName,
-          type: "bar",
-          barGap: "20%",
-          barCategoryGap: granularity.value === "month" ? "40%" : "34%",
-          barMaxWidth: granularity.value === "month" ? 26 : 16,
-          z: 2,
-          itemStyle: {
-            color: new echarts.graphic.LinearGradient(0, 0, 0, 1, [
-              { offset: 0, color: gradient[0] },
-              { offset: 1, color: gradient[1] },
-            ]),
-            borderRadius: [10, 10, 4, 4],
-          },
-          emphasis: {
-            focus: "series",
-            itemStyle: {
-              shadowBlur: 18,
-              shadowColor: seriesShadow,
-            },
-          },
-          data: series.data,
-        };
-      }),
-      textStyle: {
-        color: textColor,
-      },
-    },
-    { notMerge: true },
-  );
 }
 
 async function refreshAll() {
@@ -434,26 +322,12 @@ watch(
 );
 
 watch(granularity, async () => {
-  await nextTick();
   await refreshTimeSeries();
-});
-
-watch(locale, async () => {
-  await nextTick();
-  renderChart();
 });
 
 onMounted(async () => {
   await refreshStats();
-  await nextTick();
-  ensureChart();
   await refreshTimeSeries();
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener("resize", onResize);
-  chart?.dispose();
-  chart = null;
 });
 </script>
 
@@ -502,24 +376,18 @@ onBeforeUnmount(() => {
 .metric-card {
   position: relative;
   overflow: hidden;
-  border: 1px solid rgba(128, 128, 128, 0.16);
-  transition: transform 0.22s ease, box-shadow 0.22s ease, border-color 0.22s ease;
+  border: var(--comic-border) solid var(--comic-ink);
+  box-shadow: var(--comic-shadow);
+  transition: transform 0.18s ease, box-shadow 0.18s ease;
 }
 
 .metric-card:hover {
-  transform: translateY(-3px);
-  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.08);
+  transform: translate(-2px, -2px);
+  box-shadow: var(--comic-shadow-lg);
 }
 
 .metric-card__shine {
-  position: absolute;
-  inset: -30% auto auto -8%;
-  width: 160px;
-  height: 160px;
-  border-radius: 50%;
-  opacity: 0.8;
-  filter: blur(12px);
-  pointer-events: none;
+  display: none;
 }
 
 .metric-card__header {
@@ -544,10 +412,10 @@ onBeforeUnmount(() => {
   justify-content: center;
   width: 38px;
   height: 38px;
-  border-radius: 12px;
+  border-radius: 10px;
   font-size: 18px;
   color: #fff;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  border: 2px solid var(--comic-ink);
 }
 
 .metric-card__value-row {
@@ -563,6 +431,7 @@ onBeforeUnmount(() => {
   line-height: 1;
   font-weight: 800;
   letter-spacing: -0.04em;
+  font-family: var(--comic-font-display);
 }
 
 .metric-card__supporting {
@@ -575,51 +444,35 @@ onBeforeUnmount(() => {
 }
 
 .metric-card--emerald {
-  background: linear-gradient(180deg, rgba(16, 185, 129, 0.1), rgba(16, 185, 129, 0.02)), var(--n-color);
-}
-
-.metric-card--emerald .metric-card__shine {
-  background: rgba(16, 185, 129, 0.2);
+  background: linear-gradient(rgba(34, 197, 94, 0.14), rgba(34, 197, 94, 0.14)), var(--n-color);
 }
 
 .metric-card--emerald .metric-card__icon {
-  background: linear-gradient(135deg, #10b981, #34d399);
+  background: #22c55e;
 }
 
 .metric-card--violet {
-  background: linear-gradient(180deg, rgba(99, 102, 241, 0.1), rgba(99, 102, 241, 0.02)), var(--n-color);
-}
-
-.metric-card--violet .metric-card__shine {
-  background: rgba(129, 140, 248, 0.22);
+  background: linear-gradient(rgba(14, 165, 233, 0.14), rgba(14, 165, 233, 0.14)), var(--n-color);
 }
 
 .metric-card--violet .metric-card__icon {
-  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  background: #0ea5e9;
 }
 
 .metric-card--amber {
-  background: linear-gradient(180deg, rgba(245, 158, 11, 0.12), rgba(245, 158, 11, 0.03)), var(--n-color);
-}
-
-.metric-card--amber .metric-card__shine {
-  background: rgba(251, 191, 36, 0.22);
+  background: linear-gradient(rgba(245, 158, 11, 0.16), rgba(245, 158, 11, 0.16)), var(--n-color);
 }
 
 .metric-card--amber .metric-card__icon {
-  background: linear-gradient(135deg, #f59e0b, #fbbf24);
+  background: #f59e0b;
 }
 
 .metric-card--rose {
-  background: linear-gradient(180deg, rgba(239, 68, 68, 0.11), rgba(239, 68, 68, 0.02)), var(--n-color);
-}
-
-.metric-card--rose .metric-card__shine {
-  background: rgba(248, 113, 113, 0.2);
+  background: linear-gradient(rgba(239, 68, 68, 0.13), rgba(239, 68, 68, 0.13)), var(--n-color);
 }
 
 .metric-card--rose .metric-card__icon {
-  background: linear-gradient(135deg, #ef4444, #fb7185);
+  background: #ef4444;
 }
 
 .dashboard-panels {
@@ -629,7 +482,8 @@ onBeforeUnmount(() => {
 }
 
 .panel-card {
-  border: 1px solid rgba(128, 128, 128, 0.16);
+  border: var(--comic-border) solid var(--comic-ink);
+  box-shadow: var(--comic-shadow);
 }
 
 .panel-header {
@@ -690,6 +544,7 @@ onBeforeUnmount(() => {
   font-weight: 800;
   letter-spacing: -0.05em;
   color: var(--n-text-color);
+  font-family: var(--comic-font-display);
 }
 
 .usage-total span {
@@ -700,30 +555,30 @@ onBeforeUnmount(() => {
 }
 
 .usage-progress {
-  height: 16px;
+  height: 18px;
   padding: 2px;
   margin-bottom: 18px;
-  border-radius: 999px;
-  background: rgba(99, 102, 241, 0.08);
-  box-shadow: inset 0 1px 2px rgba(15, 23, 42, 0.08);
+  border-radius: 8px;
+  background: rgba(14, 165, 233, 0.1);
+  border: 2px solid var(--comic-ink);
 }
 
 .usage-progress__fill {
   height: 100%;
-  border-radius: inherit;
+  border-radius: 4px;
   transition: width 0.35s ease;
 }
 
 .usage-progress__fill.usage-badge--healthy {
-  background: linear-gradient(90deg, #10b981, #34d399);
+  background: #22c55e;
 }
 
 .usage-progress__fill.usage-badge--warm {
-  background: linear-gradient(90deg, #f59e0b, #fbbf24);
+  background: #f59e0b;
 }
 
 .usage-progress__fill.usage-badge--critical {
-  background: linear-gradient(90deg, #ef4444, #fb7185);
+  background: #ef4444;
 }
 
 .usage-split {
@@ -734,9 +589,9 @@ onBeforeUnmount(() => {
 
 .usage-split__item {
   padding: 14px;
-  border-radius: 14px;
-  background: rgba(99, 102, 241, 0.04);
-  border: 1px solid rgba(99, 102, 241, 0.08);
+  border-radius: 10px;
+  background: rgba(14, 165, 233, 0.06);
+  border: 2px solid var(--comic-ink);
 }
 
 .usage-split__label {
@@ -773,16 +628,17 @@ onBeforeUnmount(() => {
   padding: 8px 10px;
   border-radius: 999px;
   font-size: 12px;
-  background: rgba(99, 102, 241, 0.06);
+  background: rgba(14, 165, 233, 0.08);
+  border: 1.5px solid var(--comic-ink);
   color: var(--n-text-color-2);
 }
 
 .chart-summary__item--violet {
-  background: rgba(99, 102, 241, 0.08);
+  background: rgba(14, 165, 233, 0.1);
 }
 
 .chart-summary__item--emerald {
-  background: rgba(16, 185, 129, 0.1);
+  background: rgba(29, 78, 216, 0.12);
 }
 
 .chart-summary__dot {
@@ -793,11 +649,11 @@ onBeforeUnmount(() => {
 }
 
 .chart-summary__item--violet .chart-summary__dot {
-  color: #6366f1;
+  color: #0ea5e9;
 }
 
 .chart-summary__item--emerald .chart-summary__dot {
-  color: #10b981;
+  color: #1d4ed8;
 }
 
 .chart-summary__label {
@@ -809,23 +665,45 @@ onBeforeUnmount(() => {
   font-family: var(--n-font-family-mono);
 }
 
-.chart-tabs {
-  width: 220px;
+.chart-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
   flex-shrink: 0;
 }
 
-.chart-shell {
-  border-radius: 20px;
-  padding: 10px;
-  background:
-    linear-gradient(180deg, rgba(99, 102, 241, 0.04), rgba(99, 102, 241, 0)),
-    rgba(99, 102, 241, 0.015);
-  border: 1px solid rgba(99, 102, 241, 0.08);
+.chart-type-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--n-text-color-2);
+  background: rgba(14, 165, 233, 0.08);
+  border: 2px solid var(--comic-ink);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.18s ease, transform 0.1s ease;
 }
 
-.chart-canvas {
-  width: 100%;
-  height: 360px;
+.chart-type-toggle:hover {
+  background: rgba(14, 165, 233, 0.16);
+}
+
+.chart-type-toggle:active {
+  transform: translateY(1px);
+}
+
+.chart-type-toggle:focus-visible {
+  outline: 2px solid #0ea5e9;
+  outline-offset: 2px;
+}
+
+.chart-tabs {
+  width: 220px;
+  flex-shrink: 0;
 }
 
 @media (max-width: 1100px) {

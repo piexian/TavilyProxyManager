@@ -11,6 +11,8 @@ type APIKey struct {
 	IsActive   bool       `gorm:"not null;default:true" json:"is_active"`
 	IsInvalid  bool       `gorm:"not null;default:false" json:"is_invalid"`
 	IsDonated  bool       `gorm:"not null;default:false" json:"is_donated"`
+	// AccessKeyID 标记该 Key 归属的捐赠者访问密钥（0 = 管理员添加/未归属）。
+	AccessKeyID uint       `gorm:"index" json:"access_key_id"`
 	LastUsedAt *time.Time `json:"last_used_at"`
 	CreatedAt  time.Time  `json:"created_at"`
 	UpdatedAt  time.Time  `json:"updated_at"`
@@ -45,13 +47,14 @@ type RequestStat struct {
 }
 
 type AccessKey struct {
-	ID         uint       `gorm:"primaryKey" json:"id"`
-	Key        string     `gorm:"uniqueIndex;not null" json:"-"`
-	Alias      string     `gorm:"not null" json:"alias"`
-	IsActive   bool       `gorm:"not null;default:true" json:"is_active"`
-	LastUsedAt *time.Time `json:"last_used_at"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	ID            uint       `gorm:"primaryKey" json:"id"`
+	Key           string     `gorm:"uniqueIndex;not null" json:"-"`
+	Alias         string     `gorm:"not null" json:"alias"`
+	IsActive      bool       `gorm:"not null;default:true" json:"is_active"`
+	LoginDisabled bool       `gorm:"not null;default:false" json:"login_disabled"` // true = 禁止登录门户（API/MCP 调用不受影响）
+	LastUsedAt    *time.Time `json:"last_used_at"`
+	CreatedAt     time.Time  `json:"created_at"`
+	UpdatedAt     time.Time  `json:"updated_at"`
 }
 
 type Setting struct {

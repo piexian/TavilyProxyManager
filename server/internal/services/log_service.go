@@ -98,3 +98,16 @@ func (s *LogService) DeleteAll(ctx context.Context) (int64, error) {
 	result := s.db.WithContext(ctx).Where("1 = 1").Delete(&models.RequestLog{})
 	return result.RowsAffected, result.Error
 }
+
+// CountByAccessKey 统计某访问密钥发起的请求数；since 非 nil 时仅统计该时刻起的记录（用于"今日"）。
+func (s *LogService) CountByAccessKey(ctx context.Context, accessKeyID uint, since *time.Time) (int64, error) {
+	q := s.db.WithContext(ctx).Model(&models.RequestLog{}).Where("access_key_id = ?", accessKeyID)
+	if since != nil {
+		q = q.Where("created_at >= ?", *since)
+	}
+	var count int64
+	if err := q.Count(&count).Error; err != nil {
+		return 0, err
+	}
+	return count, nil
+}

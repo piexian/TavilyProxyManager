@@ -940,7 +940,8 @@ onBeforeUnmount(stopSyncJobPolling);
 
 .table-card {
   border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  border: 2px solid var(--comic-ink);
+  box-shadow: var(--comic-shadow);
 }
 
 .table-card :deep(.n-card__content) {

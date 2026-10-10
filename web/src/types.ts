@@ -57,6 +57,7 @@ export type AccessKeyItem = {
   key: string
   alias: string
   is_active: boolean
+  login_disabled: boolean
   last_used_at?: string | null
   created_at?: string
 }
@@ -64,4 +65,22 @@ export type AccessKeyItem = {
 export type LogStatusCount = {
   status_code: number
   count: number
+}
+
+// 捐赠者门户：概览汇总与当前捐赠者信息。
+export type PortalOverview = {
+  total_quota: number
+  used_quota: number
+  remaining: number
+  key_count: number
+  today_requests: number
+  total_requests: number
+}
+
+export type PortalMe = {
+  alias: string
+  key: string
+  is_active: boolean
+  last_used_at?: string | null
+  created_at?: string
 }

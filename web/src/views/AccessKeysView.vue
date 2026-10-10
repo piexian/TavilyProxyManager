@@ -94,6 +94,19 @@
             <span>{{ editActive ? t("common.enabled") : t("common.disabled") }}</span>
           </n-space>
         </n-form-item>
+        <n-form-item :label="t('accessKeys.editModal.portalLogin')">
+          <n-space vertical size="small" style="width: 100%">
+            <n-space align="center">
+              <n-switch v-model:value="editAllowLogin" />
+              <span>{{
+                editAllowLogin
+                  ? t("accessKeys.login.allow")
+                  : t("accessKeys.login.apiOnly")
+              }}</span>
+            </n-space>
+            <span class="field-hint">{{ t("accessKeys.editModal.portalLoginHint") }}</span>
+          </n-space>
+        </n-form-item>
       </n-space>
     </n-modal>
   </n-space>
@@ -145,6 +158,7 @@ const saving = ref(false);
 const editId = ref(0);
 const editAlias = ref("");
 const editActive = ref(true);
+const editAllowLogin = ref(true);
 
 function formatTime(value?: string | null): string {
   if (!value) return "-";
@@ -184,7 +198,10 @@ async function generateKey() {
     message.success(t("accessKeys.messages.generated"));
     await loadKeys();
   } catch (err: any) {
-    message.error(err?.response?.data?.error ?? t("common.createFailed"));
+    const code = err?.response?.data?.error;
+    message.error(
+      code === "alias_taken" ? t("donate.aliasTaken") : code ?? t("common.createFailed"),
+    );
   } finally {
     generating.value = false;
   }
@@ -214,6 +231,7 @@ function openEdit(row: AccessKeyItem) {
   editId.value = row.id;
   editAlias.value = row.alias;
   editActive.value = row.is_active;
+  editAllowLogin.value = !row.login_disabled;
   showEditModal.value = true;
 }
 
@@ -223,16 +241,34 @@ async function saveEdit() {
     await api.put(`/api/access-keys/${editId.value}`, {
       alias: editAlias.value,
       is_active: editActive.value,
+      login_disabled: !editAllowLogin.value,
     });
     showEditModal.value = false;
     message.success(t("accessKeys.messages.updated"));
     await loadKeys();
   } catch (err: any) {
-    message.error(err?.response?.data?.error ?? t("common.updateFailed"));
+    const code = err?.response?.data?.error;
+    message.error(
+      code === "alias_taken" ? t("donate.aliasTaken") : code ?? t("common.updateFailed"),
+    );
   } finally {
     saving.value = false;
   }
   return false;
+}
+
+// 表格内一键切换门户登录能力（乐观更新，失败回滚并重载）。
+async function toggleLogin(row: AccessKeyItem, allow: boolean) {
+  const prev = row.login_disabled;
+  row.login_disabled = !allow;
+  try {
+    await api.put(`/api/access-keys/${row.id}`, { login_disabled: !allow });
+    message.success(t("accessKeys.messages.loginToggled"));
+  } catch (err: any) {
+    row.login_disabled = prev;
+    message.error(err?.response?.data?.error ?? t("common.updateFailed"));
+    await loadKeys();
+  }
 }
 
 async function deleteKey(id: number) {
@@ -273,6 +309,35 @@ const columns: DataTableColumns<AccessKeyItem> = [
         },
         { default: () => (r.is_active ? t("common.active") : t("common.disabled")) },
       ),
+  },
+  {
+    title: () => t("accessKeys.table.portalLogin"),
+    key: "login_disabled",
+    width: 120,
+    align: "center",
+    render: (r) =>
+      h(NSpace, { vertical: true, size: 2, align: "center" }, () => [
+        h(NSwitch, {
+          value: !r.login_disabled,
+          size: "small",
+          "onUpdate:value": (allow: boolean) => toggleLogin(r, allow),
+        }),
+        h(
+          NTag,
+          {
+            type: r.login_disabled ? "warning" : "info",
+            size: "small",
+            round: true,
+            bordered: false,
+          },
+          {
+            default: () =>
+              r.login_disabled
+                ? t("accessKeys.login.apiOnly")
+                : t("accessKeys.login.allow"),
+          },
+        ),
+      ]),
   },
   {
     title: () => t("accessKeys.table.lastUsed"),
@@ -362,9 +427,16 @@ onMounted(loadKeys);
   font-size: 13px;
 }
 
+.field-hint {
+  color: var(--n-text-color-3, #888);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .table-card {
   border-radius: 12px;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+  border: 2px solid var(--comic-ink);
+  box-shadow: var(--comic-shadow);
 }
 
 .table-card :deep(.n-card__content) {
