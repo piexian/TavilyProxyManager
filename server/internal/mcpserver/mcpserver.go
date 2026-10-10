@@ -214,8 +214,8 @@ func addResearchGetTool(server *mcp.Server, proxy *services.TavilyProxy, tool *m
 		if len(req.Params.Arguments) > 0 {
 			if err := json.Unmarshal(req.Params.Arguments, &args); err != nil {
 				return &mcp.CallToolResult{
-					IsError: true,
-					Content: []mcp.Content{&mcp.TextContent{Text: "invalid arguments: " + err.Error()}},
+					IsError:           true,
+					Content:           []mcp.Content{&mcp.TextContent{Text: "invalid arguments: " + err.Error()}},
 					StructuredContent: map[string]any{"error": "invalid arguments"},
 				}, nil
 			}
@@ -223,8 +223,8 @@ func addResearchGetTool(server *mcp.Server, proxy *services.TavilyProxy, tool *m
 		requestID := strings.TrimSpace(args.RequestID)
 		if requestID == "" {
 			return &mcp.CallToolResult{
-				IsError: true,
-				Content: []mcp.Content{&mcp.TextContent{Text: "request_id is required"}},
+				IsError:           true,
+				Content:           []mcp.Content{&mcp.TextContent{Text: "request_id is required"}},
 				StructuredContent: map[string]any{"error": "request_id is required"},
 			}, nil
 		}
@@ -250,8 +250,8 @@ func addResearchGetTool(server *mcp.Server, proxy *services.TavilyProxy, tool *m
 		})
 		if err != nil {
 			return &mcp.CallToolResult{
-				IsError: true,
-				Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
+				IsError:           true,
+				Content:           []mcp.Content{&mcp.TextContent{Text: err.Error()}},
 				StructuredContent: map[string]any{"error": err.Error()},
 			}, nil
 		}
@@ -280,8 +280,8 @@ func addResearchGetTool(server *mcp.Server, proxy *services.TavilyProxy, tool *m
 		}
 
 		return &mcp.CallToolResult{
-			Content:            []mcp.Content{&mcp.TextContent{Text: text}},
-			StructuredContent:  structured,
+			Content:           []mcp.Content{&mcp.TextContent{Text: text}},
+			StructuredContent: structured,
 		}, nil
 	})
 }
@@ -361,14 +361,14 @@ var tavilySearchInputSchema = map[string]any{
 			"type":        "string",
 			"enum":        []string{"advanced", "basic", "fast", "ultra-fast"},
 			"default":     "basic",
-			"description": "Controls relevance vs latency and how results[].content is generated. basic: balanced, 1 summary per URL (1 credit). fast: lower latency, multiple snippets per URL (1 credit). ultra-fast: lowest latency, 1 summary per URL (1 credit). advanced: highest relevance, multiple snippets per URL (2 credits).",
+			"description": "Controls relevance vs latency and how results[].content is generated. basic: balanced, multiple reranked chunks per URL (1 credit). fast: lower latency, multiple chunks per URL (1 credit). ultra-fast: lowest latency, 1 summary per URL (0.5 credits, billed as 1). advanced: highest relevance, multiple snippets per URL (2 credits).",
 		},
 		"chunks_per_source": map[string]any{
 			"type":        "integer",
 			"minimum":     1,
-			"maximum":     3,
+			"maximum":     20,
 			"default":     3,
-			"description": "Max number of relevant chunks (each up to ~500 chars) to return per source. Used with search_depth=advanced.",
+			"description": "Max number of relevant chunks (~500 chars each for basic/fast, ~800 for advanced) to return per source. Applies to search_depth=advanced, basic or fast.",
 		},
 		"max_results": map[string]any{
 			"type":        "integer",
@@ -395,10 +395,30 @@ var tavilySearchInputSchema = map[string]any{
 			"default":     nil,
 			"description": "Return results before this date (YYYY-MM-DD).",
 		},
+		"include_published_date": map[string]any{
+			"type":        "boolean",
+			"default":     false,
+			"description": "Include a published_date field in each result (Tavily's best estimate; null when undetectable). Beta. Automatically enabled when topic=news.",
+		},
+		"filter_by_published_date": map[string]any{
+			"type":        "boolean",
+			"default":     false,
+			"description": "Strictly remove results outside the time_range/start_date/end_date window, and drop results with no detectable published date.",
+		},
 		"country": map[string]any{
 			"type":        "string",
 			"default":     nil,
 			"description": "Boost results from a specific country (topic=general only). Use lowercase country names like 'united states'.",
+		},
+		"language": map[string]any{
+			"type":        "string",
+			"default":     nil,
+			"description": "Boost results in a specific language. ISO 639-1 code (e.g. 'en', 'fr', 'zh-cn') or English language name (e.g. 'english', 'french').",
+		},
+		"filter_by_language": map[string]any{
+			"type":        "boolean",
+			"default":     false,
+			"description": "Strictly drop results that don't match language instead of only boosting them. Requires language to be set, otherwise the request returns 400.",
 		},
 		"include_domains": map[string]any{
 			"type":        "array",
@@ -411,6 +431,12 @@ var tavilySearchInputSchema = map[string]any{
 			"default":     []any{},
 			"items":       map[string]any{"type": "string"},
 			"description": "A list of domains to specifically exclude from the search results (max 150).",
+		},
+		"include_domains_mode": map[string]any{
+			"type":        "string",
+			"enum":        []string{"restrict", "prefer"},
+			"default":     "restrict",
+			"description": "How include_domains is applied. restrict: hard filter to the listed domains only. prefer: also search the rest of the web, so results outside include_domains can still surface. Requires include_domains to be set, otherwise the request returns 400.",
 		},
 		"include_images": map[string]any{
 			"type":        "boolean",
@@ -442,6 +468,11 @@ var tavilySearchInputSchema = map[string]any{
 			"type":        "boolean",
 			"default":     false,
 			"description": "Whether to include the favicon URL for each result.",
+		},
+		"safe_search": map[string]any{
+			"type":        "boolean",
+			"default":     false,
+			"description": "Filter out adult or unsafe content from results and images. Not supported for fast or ultra-fast search depths.",
 		},
 		"include_usage": map[string]any{
 			"type":        "boolean",
