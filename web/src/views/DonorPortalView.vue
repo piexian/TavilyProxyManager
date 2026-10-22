@@ -14,6 +14,7 @@ import PortalKeyTable from "../components/portal/PortalKeyTable.vue";
 import PortalSecurity from "../components/portal/PortalSecurity.vue";
 import { useDonorPortal } from "../composables/useDonorPortal";
 import { t } from "../i18n";
+import { apiErrorMessage } from "../utils/apiError";
 
 const props = defineProps<{ refreshNonce?: number }>();
 
@@ -33,11 +34,15 @@ const {
   deleteKey,
 } = useDonorPortal();
 
+// 记住当前所选粒度：重新登录触发的 loadAll 要沿用它，否则图表数据与 PortalOverview
+// 里保留的粒度选择不一致（界面显示「天」，实际是小时数据）。
+const granularity = ref<"hour" | "day" | "month">("hour");
+
 async function loadAll() {
   await Promise.all([
     loadMe(),
     loadOverview(),
-    loadTimeseries("hour"),
+    loadTimeseries(granularity.value),
     loadKeys(),
   ]).catch(() => {
     /* 单项失败不阻断其余；各自的错误在拦截器/界面层处理 */
@@ -45,6 +50,7 @@ async function loadAll() {
 }
 
 async function onChangeGranularity(g: "hour" | "day" | "month") {
+  granularity.value = g;
   await loadTimeseries(g);
 }
 
@@ -54,7 +60,7 @@ async function onDelete(id: number) {
     message.success(t("portal.keys.deleted"));
     await Promise.all([loadKeys(), loadOverview()]);
   } catch (err: any) {
-    message.error(err?.response?.data?.error ?? t("common.deleteFailed"));
+    message.error(apiErrorMessage(err, t("common.deleteFailed")));
   }
 }
 

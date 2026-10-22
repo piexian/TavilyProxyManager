@@ -332,13 +332,9 @@ async function handleQuery() {
     });
     queryResult.value = res.data;
   } catch (err: any) {
+    // /donate/query 只会返回 400/429/500，不存在 alias_taken（409）。
     if (err.response?.status === 429) {
       message.error(t("donate.rateLimited"));
-    } else if (
-      err.response?.status === 409 &&
-      err.response?.data?.error === "alias_taken"
-    ) {
-      message.error(t("donate.aliasTaken"));
     } else {
       message.error(t("common.createFailed"));
     }

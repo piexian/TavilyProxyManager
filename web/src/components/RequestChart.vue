@@ -191,12 +191,22 @@ watch(
   { deep: true },
 );
 
+// 图表配色在 renderChart 里按当前明暗取值，需要在主题切换（<html data-theme> 变化）时重绘。
+let themeObserver: MutationObserver | null = null;
+
 onMounted(() => {
   ensureChart();
   renderChart();
+  themeObserver = new MutationObserver(renderChart);
+  themeObserver.observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ["data-theme"],
+  });
 });
 
 onBeforeUnmount(() => {
+  themeObserver?.disconnect();
+  themeObserver = null;
   window.removeEventListener("resize", onResize);
   chart?.dispose();
   chart = null;

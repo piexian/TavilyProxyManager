@@ -31,15 +31,19 @@ export function useDonorPortal() {
     }
   }
 
+  // 连续切换粒度时，先发后到的旧响应不能覆盖新请求的结果。
+  let timeseriesSeq = 0;
+
   async function loadTimeseries(granularity: "hour" | "day" | "month") {
+    const seq = ++timeseriesSeq;
     loadingChart.value = true;
     try {
       const { data } = await api.get<TimeSeries>("/api/portal/timeseries", {
         params: { granularity },
       });
-      timeseries.value = data;
+      if (seq === timeseriesSeq) timeseries.value = data;
     } finally {
-      loadingChart.value = false;
+      if (seq === timeseriesSeq) loadingChart.value = false;
     }
   }
 

@@ -10,6 +10,7 @@ import {
 } from "naive-ui";
 import { api } from "../../api/client";
 import { t } from "../../i18n";
+import { apiErrorMessage } from "../../utils/apiError";
 
 const emit = defineEmits<{ (e: "added"): void }>();
 
@@ -92,7 +93,7 @@ async function submit() {
     batchKeys.value = "";
     emit("added");
   } catch (err: any) {
-    message.error(err?.response?.data?.error ?? t("common.createFailed"));
+    message.error(apiErrorMessage(err, t("common.createFailed")));
   } finally {
     submitting.value = false;
   }
