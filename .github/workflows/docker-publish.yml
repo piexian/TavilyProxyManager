@@ -1,8 +1,8 @@
 name: Build and Push to GHCR
 
+# 仅在推送 v* 标签时构建并发布镜像；日常推送 main 不触发。
 on:
   push:
-    branches: ["main"]
     tags: ["v*"]
 
 env:
@@ -33,9 +33,9 @@ jobs:
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=semver,pattern={{major}}.{{minor}},enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3

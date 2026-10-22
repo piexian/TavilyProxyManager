@@ -1,0 +1,30 @@
+name: CI
+
+# 仅做静态检查与测试，不构建、不发布；构建与发布见 docker-publish.yml / build-multi-platform.yml（仅 v* 标签触发）。
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+    branches: ["main"]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go vet & test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test -race -count=1 ./server/...

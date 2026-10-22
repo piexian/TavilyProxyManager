@@ -15,7 +15,7 @@
 - **后端**：Go 1.26.10+，Gin HTTP 框架，GORM + SQLite 持久化，单二进制部署
 - **前端**：Vue 3 + TypeScript + Naive UI + ECharts，Vite 构建，编译后嵌入 Go 二进制
 - **协议**：HTTP REST API + MCP (Model Context Protocol)
-- **部署**：Docker / Docker Compose（多阶段构建），CI 通过 GitHub Actions 自动发布到 GHCR
+- **部署**：Docker / Docker Compose（多阶段构建），推送 `v*` 标签时由 GitHub Actions 发布到 GHCR 与 GitHub Release
 - **辅助工具**：Python 3.12+ 批量注册脚本（`register/`），使用临时邮箱 + 视觉模型识别验证码
 
 ---
@@ -114,7 +114,9 @@ docker build -t my-tavily-proxy .
   - 运行：`cd server && go test ./...`
 - **前端测试**：目前无自动化测试
 - **register 模块**：目前无自动化测试
-- **CI**：GitHub Actions（`.github/workflows/docker-publish.yml`）-- 仅构建并推送 Docker 镜像，不包含测试阶段
+- **CI**：`.github/workflows/ci.yml` 在推送 main / 提 PR 时运行 `go vet` 与 `go test -race`；
+  `docker-publish.yml`（GHCR 镜像）与 `build-multi-platform.yml`（多平台二进制 + GitHub Release）仅在推送 `v*` 标签时触发
+- **发布流程**：升级 `web/package.json` 版本 -> 提交 `release vX.Y.Z` -> `git tag vX.Y.Z && git push origin vX.Y.Z`
 
 ---
 
