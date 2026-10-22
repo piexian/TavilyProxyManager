@@ -203,6 +203,8 @@ func (s *QuotaSyncService) syncKey(ctx context.Context, key models.APIKey) Quota
 					s.logger.Warn("quota-sync: mark invalid failed", "key_id", key.ID, "err", e)
 				}
 			case http.StatusForbidden, 432, 433:
+				// /usage 不是付费功能端点，403 按该 Key 自身不可用处理，标记耗尽作为兜底；
+				// 代理转发里的 403 可能只是端点权限不足，因此不在 tavily_proxy 里标记。
 				if e := s.keys.MarkExhausted(context.Background(), key.ID); e != nil {
 					s.logger.Warn("quota-sync: mark exhausted failed", "key_id", key.ID, "err", e)
 				}

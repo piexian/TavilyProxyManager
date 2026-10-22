@@ -144,6 +144,8 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 					ResponseTruncated: responseTruncated,
 					CacheHit:          true,
 					ClientIP:          req.ClientIP,
+					AccessKeyID:       req.AccessKeyID,
+					AccessKeyAlias:    req.AccessKeyAlias,
 					CreatedAt:         createdAt,
 				})
 			}
@@ -264,25 +266,10 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 			)
 			_ = p.keys.MarkInvalid(ctx, key.ID)
 			continue
-		case http.StatusTooManyRequests:
-			p.logger.Warn("key rate limited",
-				"request_id", proxyReqID,
-				"key_id", key.ID,
-				"key_alias", key.Alias,
-				"status", status,
-			)
-			resp.ProxyRequestID = proxyReqID
-			resp.TavilyRequestID = tavilyReqID
-			lastRateLimitedResp = resp
-			hasRateLimitedResp = true
-			lastRateLimitedKeyID = key.ID
-			lastRateLimitedKeyAlias = key.Alias
-			lastRateLimitedLatency = latencyMs
-			continue
-		case http.StatusForbidden:
-			// 403 可能是付费功能限制（如 /logs 仅付费计划），与 Key 额度无关：
-			// 换下一个 Key 重试，但不把该 Key 标记为额度耗尽。
-			p.logger.Warn("key forbidden (not marked exhausted)",
+		case http.StatusTooManyRequests, http.StatusForbidden:
+			// 429 为限流；403 可能是付费功能限制（如 /logs 仅付费计划），与 Key 额度无关：
+			// 二者都换下一个 Key 重试，但不把该 Key 标记为额度耗尽。
+			p.logger.Warn("key rate limited or forbidden (not marked exhausted)",
 				"request_id", proxyReqID,
 				"key_id", key.ID,
 				"key_alias", key.Alias,
@@ -400,18 +387,22 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 					ResponseBody:      responseBody,
 					ResponseTruncated: responseTruncated,
 					ClientIP:          req.ClientIP,
+					AccessKeyID:       req.AccessKeyID,
+					AccessKeyAlias:    req.AccessKeyAlias,
 					CreatedAt:         createdAt,
 				})
 			} else {
 				_ = p.logs.Create(ctx, &models.RequestLog{
-					RequestID:  proxyReqID,
-					KeyUsed:    lastRateLimitedKeyID,
-					KeyAlias:   lastRateLimitedKeyAlias,
-					Endpoint:   req.Path,
-					StatusCode: lastRateLimitedResp.StatusCode,
-					LatencyMs:  lastRateLimitedLatency,
-					ClientIP:   req.ClientIP,
-					CreatedAt:  createdAt,
+					RequestID:      proxyReqID,
+					KeyUsed:        lastRateLimitedKeyID,
+					KeyAlias:       lastRateLimitedKeyAlias,
+					Endpoint:       req.Path,
+					StatusCode:     lastRateLimitedResp.StatusCode,
+					LatencyMs:      lastRateLimitedLatency,
+					ClientIP:       req.ClientIP,
+					AccessKeyID:    req.AccessKeyID,
+					AccessKeyAlias: req.AccessKeyAlias,
+					CreatedAt:      createdAt,
 				})
 			}
 		}
