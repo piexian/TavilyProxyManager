@@ -273,6 +273,7 @@ func TestProxy_AccessKeyUsage_ReturnsPoolUsageSummary(t *testing.T) {
 	}
 
 	accessKeys := services.NewAccessKeyService(database, logger)
+	t.Cleanup(accessKeys.Wait)
 	accessKey, err := accessKeys.Create(ctx, "client")
 	if err != nil {
 		t.Fatalf("create access key: %v", err)

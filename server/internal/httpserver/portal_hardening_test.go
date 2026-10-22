@@ -25,6 +25,7 @@ func TestPortalAddKeysRoute_BodyLimitAndRateLimit(t *testing.T) {
 	database := portalTestDB(t)
 	keys := services.NewKeyService(database, logger)
 	access := services.NewAccessKeyService(database, logger)
+	t.Cleanup(access.Wait)
 	proxy := services.NewTavilyProxy("http://127.0.0.1:0", time.Second, keys, nil, nil, logger)
 	ak, err := access.Create(context.Background(), "donor")
 	if err != nil {

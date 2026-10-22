@@ -27,7 +27,9 @@ func newAccessKeyTestServices(t *testing.T) (*AccessKeyService, *KeyService) {
 		t.Fatalf("db handle: %v", err)
 	}
 	t.Cleanup(func() { _ = sqlDB.Close() })
-	return NewAccessKeyService(database, logger), NewKeyService(database, logger)
+	access := NewAccessKeyService(database, logger)
+	t.Cleanup(access.Wait) // 先于数据库关闭执行（Cleanup 后进先出）
+	return access, NewKeyService(database, logger)
 }
 
 // alias 唯一性按「去空格 + Unicode 大小写折叠」判定；SQLite 的 LOWER 只处理 ASCII，

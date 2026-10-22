@@ -24,6 +24,9 @@ type AccessKeyService struct {
 	// aliasMu 串行化别名唯一性的「检查 + 写入」，保证进程内 alias 全局唯一。
 	aliasMu sync.Mutex
 
+	// touchWG 跟踪 Authenticate 触发的后台 last_used_at 回写，供 Wait 等待。
+	touchWG sync.WaitGroup
+
 	mu    sync.RWMutex
 	cache []models.AccessKey
 }
@@ -60,12 +63,20 @@ func (s *AccessKeyService) Authenticate(token string) (*models.AccessKey, bool) 
 	for i := range s.cache {
 		if subtle.ConstantTimeCompare([]byte(s.cache[i].Key), []byte(token)) == 1 {
 			ak := s.cache[i]
-			go s.touchLastUsed(ak.ID)
+			s.touchWG.Add(1)
+			go func() {
+				defer s.touchWG.Done()
+				s.touchLastUsed(ak.ID)
+			}()
 			return &ak, true
 		}
 	}
 	return nil, false
 }
+
+// Wait 等待所有后台 last_used_at 回写结束。测试须在关闭数据库前调用，
+// 否则回写协程可能在临时库被清理后仍在写入，造成偶发失败。
+func (s *AccessKeyService) Wait() { s.touchWG.Wait() }
 
 func (s *AccessKeyService) touchLastUsed(id uint) {
 	now := time.Now()

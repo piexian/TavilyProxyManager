@@ -88,6 +88,7 @@ func TestHandlePortalResetKey_InvalidatesOldToken(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	database := portalTestDB(t)
 	accessKeys := services.NewAccessKeyService(database, logger)
+	t.Cleanup(accessKeys.Wait)
 	ctx := context.Background()
 
 	ak, err := accessKeys.Create(ctx, "tester")
@@ -225,6 +226,7 @@ func TestAccessKeyAuthMiddleware_LoginDisabled(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	database := portalTestDB(t)
 	accessKeys := services.NewAccessKeyService(database, logger)
+	t.Cleanup(accessKeys.Wait)
 	ctx := context.Background()
 
 	ak, err := accessKeys.Create(ctx, "api-only")
