@@ -119,6 +119,7 @@ func NewRouter(deps Dependencies) http.Handler {
 		publicLimited.POST("/donate/query", func(c *gin.Context) { handleQueryDonation(c, deps.KeyService) })
 	}
 
+	portalAddLimiter := NewRateLimiter(5.0/60.0, 5) // 5 req/min per access key
 	// 捐赠者自助门户：凭访问密钥（捐赠时签发）鉴权，仅能操作自己名下的数据。
 	portal := r.Group("/api/portal", accessKeyAuthMiddleware(deps.AccessKeyService))
 	{
@@ -126,7 +127,13 @@ func NewRouter(deps Dependencies) http.Handler {
 		portal.GET("/overview", func(c *gin.Context) { handlePortalOverview(c, deps.KeyService, deps.LogService) })
 		portal.GET("/timeseries", func(c *gin.Context) { handlePortalTimeSeries(c, deps.KeyService, deps.StatsService) })
 		portal.GET("/keys", func(c *gin.Context) { handlePortalListKeys(c, deps.KeyService) })
-		portal.POST("/keys", func(c *gin.Context) { handlePortalAddKeys(c, deps.KeyService, deps.TavilyProxy) })
+		// 加 Key 会逐个调用上游校验：限制请求体与频率（按访问密钥而非 IP），与公开捐赠接口一致。
+		portal.POST("/keys",
+			bodyLimitMiddleware(16*1024),
+			portalAddLimiter.MiddlewareBy(func(c *gin.Context) string {
+				return strconv.FormatUint(uint64(c.GetUint(ctxAccessKeyID)), 10)
+			}),
+			func(c *gin.Context) { handlePortalAddKeys(c, deps.KeyService, deps.TavilyProxy) })
 		portal.DELETE("/keys/:id", func(c *gin.Context) { handlePortalDeleteKey(c, deps.KeyService, c.Param("id")) })
 		portal.POST("/reset-key", func(c *gin.Context) { handlePortalResetKey(c, deps.AccessKeyService) })
 	}
@@ -512,6 +519,10 @@ func handleDonateKeys(c *gin.Context, keys *services.KeyService, proxy *services
 
 	// 校验（走上游）已结束，入库只剩本地写：脱离请求取消，保证访问密钥与 Key 要么都落库要么回滚。
 	ak, err := batch.persistForNewDonor(context.WithoutCancel(ctx), keys, accessKeys)
+	if errors.Is(err, services.ErrAliasTaken) { // 预检之后被并发请求抢先占用
+		c.JSON(http.StatusConflict, gin.H{"error": "alias_taken"})
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "create_failed"})
 		return
@@ -963,10 +974,19 @@ func handleTimeSeries(c *gin.Context, stats *services.StatsService) {
 	granularity := c.Query("granularity")
 	out, err := stats.TimeSeries(c.Request.Context(), granularity)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_granularity"})
+		respondTimeSeriesError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, out)
+}
+
+// respondTimeSeriesError 区分参数错误（400）与查询失败（500），避免把数据库故障误报成粒度非法。
+func respondTimeSeriesError(c *gin.Context, err error) {
+	if errors.Is(err, services.ErrInvalidGranularity) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_granularity"})
+		return
+	}
+	c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
 }
 
 func handleProxy(c *gin.Context, proxy *services.TavilyProxy, body []byte, rawQuery string, accessKeyID uint, accessKeyAlias string) {
@@ -1212,14 +1232,11 @@ func handleCreateAccessKey(c *gin.Context, svc *services.AccessKeyService) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "missing_alias"})
 		return
 	}
-	if taken, err := svc.AliasExists(c.Request.Context(), body.Alias, 0); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
-		return
-	} else if taken {
+	created, err := svc.Create(c.Request.Context(), body.Alias)
+	if errors.Is(err, services.ErrAliasTaken) {
 		c.JSON(http.StatusConflict, gin.H{"error": "alias_taken"})
 		return
 	}
-	created, err := svc.Create(c.Request.Context(), strings.TrimSpace(body.Alias))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "create_failed"})
 		return
@@ -1246,25 +1263,11 @@ func handleUpdateAccessKey(c *gin.Context, svc *services.AccessKeyService, idStr
 		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_json"})
 		return
 	}
-	// 仅在 alias 相对当前值发生变化时才查重：编辑弹窗每次都会带上原 alias，
-	// 否则历史重名的访问密钥连启停/门户登录开关都改不了。
-	if body.Alias != nil {
-		current, err := svc.FindByID(c.Request.Context(), uint(id))
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
-			return
-		}
-		if current == nil || current.Alias != *body.Alias {
-			if taken, err := svc.AliasExists(c.Request.Context(), *body.Alias, uint(id)); err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
-				return
-			} else if taken {
-				c.JSON(http.StatusConflict, gin.H{"error": "alias_taken"})
-				return
-			}
-		}
-	}
 	updated, err := svc.Update(c.Request.Context(), uint(id), body)
+	if errors.Is(err, services.ErrAliasTaken) {
+		c.JSON(http.StatusConflict, gin.H{"error": "alias_taken"})
+		return
+	}
 	if err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "update_failed"})
 		return
@@ -1347,12 +1350,7 @@ func handlePortalOverview(c *gin.Context, keys *services.KeyService, logs *servi
 
 	now := time.Now()
 	startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, now.Location())
-	todayRequests, err := logs.CountByAccessKey(ctx, id, &startOfDay)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
-		return
-	}
-	totalRequests, err := logs.CountByAccessKey(ctx, id, nil)
+	totalRequests, todayRequests, err := logs.CountByAccessKey(ctx, id, startOfDay)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
 		return
@@ -1373,19 +1371,15 @@ func handlePortalTimeSeries(c *gin.Context, keys *services.KeyService, stats *se
 	ctx := c.Request.Context()
 	id := c.GetUint(ctxAccessKeyID)
 
-	owned, err := keys.ListByAccessKey(ctx, id)
+	ids, err := keys.KeyIDsByAccessKey(ctx, id)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "db_error"})
 		return
 	}
-	ids := make([]uint, 0, len(owned))
-	for _, k := range owned {
-		ids = append(ids, k.ID)
-	}
 
 	out, err := stats.PortalTimeSeries(ctx, c.Query("granularity"), id, ids)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_granularity"})
+		respondTimeSeriesError(c, err)
 		return
 	}
 	c.JSON(http.StatusOK, out)

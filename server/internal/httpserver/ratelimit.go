@@ -77,8 +77,13 @@ func (r *RateLimiter) Allow(ip string) bool {
 
 // Middleware returns a Gin middleware that rate-limits by client IP.
 func (r *RateLimiter) Middleware() gin.HandlerFunc {
+	return r.MiddlewareBy(func(c *gin.Context) string { return c.ClientIP() })
+}
+
+// MiddlewareBy 与 Middleware 相同，但按 keyFn 返回值分桶（例如按访问密钥 ID 而非 IP）。
+func (r *RateLimiter) MiddlewareBy(keyFn func(*gin.Context) string) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if !r.Allow(c.ClientIP()) {
+		if !r.Allow(keyFn(c)) {
 			c.JSON(http.StatusTooManyRequests, gin.H{"error": "rate_limited"})
 			c.Abort()
 			return

@@ -12,6 +12,9 @@ import (
 	"gorm.io/gorm/clause"
 )
 
+// ErrInvalidGranularity 表示请求了未知的时序粒度，调用方应据此返回 400 而非 500。
+var ErrInvalidGranularity = errors.New("invalid granularity")
+
 type StatsService struct {
 	db *gorm.DB
 }
@@ -138,7 +141,7 @@ func timeBuckets(granularity string) (string, timeBucketSpec, error) {
 		spec.labelFormat = func(t time.Time) string { return t.Format("2006-01") }
 		spec.strftimeExpr = "strftime('%Y-%m', created_at, 'localtime')"
 	default:
-		return "", timeBucketSpec{}, fmt.Errorf("invalid granularity: %s", granularity)
+		return "", timeBucketSpec{}, fmt.Errorf("%w: %s", ErrInvalidGranularity, granularity)
 	}
 	return granularity, spec, nil
 }
@@ -238,7 +241,7 @@ func (s *StatsService) bucketCountsFromLogs(ctx context.Context, strftimeExpr st
 	var rows []row
 	if err := s.db.WithContext(ctx).
 		Model(&models.RequestLog{}).
-		Select(strftimeExpr + " as bucket, COUNT(*) as count").
+		Select(strftimeExpr+" as bucket, COUNT(*) as count").
 		Where("created_at >= ?", start).
 		Where(cond, arg).
 		Group("bucket").
@@ -344,10 +347,14 @@ func (s *StatsService) BackfillFromLogsIfEmpty(ctx context.Context) error {
 		expr        string
 	}
 
-	specs := []spec{
-		{granularity: "hour", expr: "strftime('%Y-%m-%d %H:00', created_at, 'localtime')"},
-		{granularity: "day", expr: "strftime('%Y-%m-%d', created_at, 'localtime')"},
-		{granularity: "month", expr: "strftime('%Y-%m', created_at, 'localtime')"},
+	// 分桶表达式与时序查询共用 timeBuckets，避免两处 strftime 格式漂移。
+	specs := make([]spec, 0, 3)
+	for _, granularity := range []string{"hour", "day", "month"} {
+		_, tb, err := timeBuckets(granularity)
+		if err != nil {
+			return err
+		}
+		specs = append(specs, spec{granularity: granularity, expr: tb.strftimeExpr})
 	}
 
 	updatedAt := time.Now()

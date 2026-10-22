@@ -99,15 +99,16 @@ func (s *LogService) DeleteAll(ctx context.Context) (int64, error) {
 	return result.RowsAffected, result.Error
 }
 
-// CountByAccessKey 统计某访问密钥发起的请求数；since 非 nil 时仅统计该时刻起的记录（用于"今日"）。
-func (s *LogService) CountByAccessKey(ctx context.Context, accessKeyID uint, since *time.Time) (int64, error) {
-	q := s.db.WithContext(ctx).Model(&models.RequestLog{}).Where("access_key_id = ?", accessKeyID)
-	if since != nil {
-		q = q.Where("created_at >= ?", *since)
+// CountByAccessKey 一次查询统计某访问密钥发起的请求数：日志内总数，以及 since 起的数量（用于"今日"）。
+// 数据来自 request_logs，受日志保留期与「请求日志」开关影响。
+func (s *LogService) CountByAccessKey(ctx context.Context, accessKeyID uint, since time.Time) (total, sinceCount int64, err error) {
+	var row struct {
+		Total  int64 `gorm:"column:total"`
+		Recent int64 `gorm:"column:recent"`
 	}
-	var count int64
-	if err := q.Count(&count).Error; err != nil {
-		return 0, err
-	}
-	return count, nil
+	err = s.db.WithContext(ctx).Model(&models.RequestLog{}).
+		Select("COUNT(*) AS total, COALESCE(SUM(CASE WHEN created_at >= ? THEN 1 ELSE 0 END), 0) AS recent", since).
+		Where("access_key_id = ?", accessKeyID).
+		Scan(&row).Error
+	return row.Total, row.Recent, err
 }

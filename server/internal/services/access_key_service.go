@@ -14,9 +14,15 @@ import (
 	"gorm.io/gorm"
 )
 
+// ErrAliasTaken 表示别名已被其它访问密钥占用（去空格、忽略大小写）。
+var ErrAliasTaken = errors.New("alias taken")
+
 type AccessKeyService struct {
 	db     *gorm.DB
 	logger *slog.Logger
+
+	// aliasMu 串行化别名唯一性的「检查 + 写入」，保证进程内 alias 全局唯一。
+	aliasMu sync.Mutex
 
 	mu    sync.RWMutex
 	cache []models.AccessKey
@@ -37,15 +43,12 @@ func (s *AccessKeyService) LoadCache(ctx context.Context) error {
 	return nil
 }
 
-func (s *AccessKeyService) refreshCache(ctx context.Context) {
-	var keys []models.AccessKey
-	if err := s.db.WithContext(ctx).Where("is_active = ?", true).Find(&keys).Error; err != nil {
+func (s *AccessKeyService) refreshCache(ctx context.Context) error {
+	if err := s.LoadCache(ctx); err != nil {
 		s.logger.Error("failed to refresh access key cache", "err", err)
-		return
+		return err
 	}
-	s.mu.Lock()
-	s.cache = keys
-	s.mu.Unlock()
+	return nil
 }
 
 func (s *AccessKeyService) Authenticate(token string) (*models.AccessKey, bool) {
@@ -78,10 +81,20 @@ func (s *AccessKeyService) List(ctx context.Context) ([]models.AccessKey, error)
 }
 
 func (s *AccessKeyService) Create(ctx context.Context, alias string) (*models.AccessKey, error) {
+	alias = strings.TrimSpace(alias)
 	token, err := generateSecret(32)
 	if err != nil {
 		return nil, err
 	}
+
+	s.aliasMu.Lock()
+	defer s.aliasMu.Unlock()
+	if taken, err := s.AliasExists(ctx, alias, 0); err != nil {
+		return nil, err
+	} else if taken {
+		return nil, ErrAliasTaken
+	}
+
 	record := models.AccessKey{
 		Key:      token,
 		Alias:    alias,
@@ -101,21 +114,44 @@ type AccessKeyUpdate struct {
 }
 
 func (s *AccessKeyService) Update(ctx context.Context, id uint, upd AccessKeyUpdate) (*models.AccessKey, error) {
+	s.aliasMu.Lock()
+	defer s.aliasMu.Unlock()
+
 	var key models.AccessKey
 	if err := s.db.WithContext(ctx).First(&key, id).Error; err != nil {
 		return nil, err
 	}
+
+	// 只回写发生变化的字段，不用 Save 整行覆盖：否则会撤销并发的 ResetKey 刚轮换的 token。
+	updates := map[string]any{}
 	if upd.Alias != nil {
-		key.Alias = *upd.Alias
+		alias := strings.TrimSpace(*upd.Alias)
+		// 仅在 alias 相对当前值变化时才查重：编辑弹窗每次都会带上原 alias，
+		// 否则历史重名的访问密钥连启停/门户登录开关都改不了。
+		if alias != strings.TrimSpace(key.Alias) {
+			if taken, err := s.AliasExists(ctx, alias, id); err != nil {
+				return nil, err
+			} else if taken {
+				return nil, ErrAliasTaken
+			}
+		}
+		if alias != key.Alias {
+			updates["alias"] = alias
+		}
 	}
 	if upd.IsActive != nil {
-		key.IsActive = *upd.IsActive
+		updates["is_active"] = *upd.IsActive
 	}
 	if upd.LoginDisabled != nil {
-		key.LoginDisabled = *upd.LoginDisabled
+		updates["login_disabled"] = *upd.LoginDisabled
 	}
-	if err := s.db.WithContext(ctx).Save(&key).Error; err != nil {
-		return nil, err
+	if len(updates) > 0 {
+		if err := s.db.WithContext(ctx).Model(&models.AccessKey{}).Where("id = ?", id).Updates(updates).Error; err != nil {
+			return nil, err
+		}
+		if err := s.db.WithContext(ctx).First(&key, id).Error; err != nil {
+			return nil, err
+		}
 	}
 	s.refreshCache(ctx)
 	return &key, nil
@@ -140,18 +176,6 @@ func (s *AccessKeyService) FindByID(ctx context.Context, id uint) (*models.Acces
 	return &key, nil
 }
 
-// FindByAlias returns the first access key matching the given alias, or nil if none exists.
-func (s *AccessKeyService) FindByAlias(ctx context.Context, alias string) (*models.AccessKey, error) {
-	var key models.AccessKey
-	if err := s.db.WithContext(ctx).Where("alias = ?", alias).First(&key).Error; err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	return &key, nil
-}
-
 func (s *AccessKeyService) GetRawKey(ctx context.Context, id uint) (string, error) {
 	var key models.AccessKey
 	if err := s.db.WithContext(ctx).First(&key, id).Error; err != nil {
@@ -161,18 +185,24 @@ func (s *AccessKeyService) GetRawKey(ctx context.Context, id uint) (string, erro
 }
 
 // AliasExists 判断别名是否已被占用（去空格、忽略大小写）；excludeID 用于更新时排除自身（传 0 表示不排除）。
+// 在 Go 侧用 EqualFold 比较：SQLite 的 LOWER 只处理 ASCII，非 ASCII 字母的大小写变体会漏判。
 func (s *AccessKeyService) AliasExists(ctx context.Context, alias string, excludeID uint) (bool, error) {
 	alias = strings.TrimSpace(alias)
 	if alias == "" {
 		return false, nil
 	}
-	var count int64
+	var aliases []string
 	if err := s.db.WithContext(ctx).Model(&models.AccessKey{}).
-		Where("LOWER(alias) = LOWER(?) AND id <> ?", alias, excludeID).
-		Count(&count).Error; err != nil {
+		Where("id <> ?", excludeID).
+		Pluck("alias", &aliases).Error; err != nil {
 		return false, err
 	}
-	return count > 0, nil
+	for _, existing := range aliases {
+		if strings.EqualFold(strings.TrimSpace(existing), alias) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // ResetKey 轮换访问密钥的 token：ID/Alias/IsActive 及名下 Key 的归属(access_key_id)全部不变，
@@ -182,10 +212,16 @@ func (s *AccessKeyService) ResetKey(ctx context.Context, id uint) (string, error
 	if err != nil {
 		return "", err
 	}
-	if err := s.db.WithContext(ctx).Model(&models.AccessKey{}).
-		Where("id = ?", id).Update("key", token).Error; err != nil {
+	result := s.db.WithContext(ctx).Model(&models.AccessKey{}).Where("id = ?", id).Update("key", token)
+	if result.Error != nil {
+		return "", result.Error
+	}
+	if result.RowsAffected == 0 {
+		return "", gorm.ErrRecordNotFound
+	}
+	// 缓存刷新失败时不能把新 token 交给调用方：它只显示一次，而缓存里仍是旧 token，会立刻 401。
+	if err := s.refreshCache(ctx); err != nil {
 		return "", err
 	}
-	s.refreshCache(ctx)
 	return token, nil
 }

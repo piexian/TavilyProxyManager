@@ -384,7 +384,11 @@ func (s *KeyService) PoolQuotaSummary(ctx context.Context) (PoolQuotaSummary, er
 		Find(&keys).Error; err != nil {
 		return PoolQuotaSummary{}, err
 	}
+	return summarizeQuota(keys), nil
+}
 
+// summarizeQuota 聚合一组 Key 的额度用量；ActiveKeyCount 即传入的 Key 数。
+func summarizeQuota(keys []models.APIKey) PoolQuotaSummary {
 	var summary PoolQuotaSummary
 	summary.ActiveKeyCount = int64(len(keys))
 	for _, key := range keys {
@@ -405,8 +409,7 @@ func (s *KeyService) PoolQuotaSummary(ctx context.Context) (PoolQuotaSummary, er
 		summary.TotalUsed += int64(used)
 		summary.TotalRemaining += int64(total - used)
 	}
-
-	return summary, nil
+	return summary
 }
 
 func (s *KeyService) FindByID(ctx context.Context, id uint) (*models.APIKey, error) {
@@ -437,35 +440,27 @@ func (s *KeyService) ListByAccessKey(ctx context.Context, accessKeyID uint) ([]m
 	return keys, nil
 }
 
-// DonatedSummaryByAccessKey 聚合某访问密钥名下（非失效）Key 的额度用量。
-// 复用 PoolQuotaSummary：ActiveKeyCount 在此表示该捐赠者名下非失效 Key 数。
+// KeyIDsByAccessKey 仅返回归属于指定访问密钥的 Key ID，避免为取 ID 而加载整行。
+func (s *KeyService) KeyIDsByAccessKey(ctx context.Context, accessKeyID uint) ([]uint, error) {
+	var ids []uint
+	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).
+		Where("access_key_id = ?", accessKeyID).
+		Pluck("id", &ids).Error; err != nil {
+		return nil, err
+	}
+	return ids, nil
+}
+
+// DonatedSummaryByAccessKey 聚合某访问密钥名下可用（已启用且未失效）Key 的额度用量，
+// 口径与号池汇总 PoolQuotaSummary 一致：ActiveKeyCount 在此表示该捐赠者名下可用 Key 数。
 func (s *KeyService) DonatedSummaryByAccessKey(ctx context.Context, accessKeyID uint) (PoolQuotaSummary, error) {
 	var keys []models.APIKey
 	if err := s.db.WithContext(ctx).
-		Where("access_key_id = ? AND is_invalid = ?", accessKeyID, false).
+		Where("access_key_id = ? AND is_active = ? AND is_invalid = ?", accessKeyID, true, false).
 		Find(&keys).Error; err != nil {
 		return PoolQuotaSummary{}, err
 	}
-
-	var summary PoolQuotaSummary
-	summary.ActiveKeyCount = int64(len(keys))
-	for _, key := range keys {
-		total := key.TotalQuota
-		if total < 0 {
-			total = 0
-		}
-		used := key.UsedQuota
-		if used < 0 {
-			used = 0
-		}
-		if used > total {
-			used = total
-		}
-		summary.TotalQuota += int64(total)
-		summary.TotalUsed += int64(used)
-		summary.TotalRemaining += int64(total - used)
-	}
-	return summary, nil
+	return summarizeQuota(keys), nil
 }
 
 // FindOwnedByID 查找归属于指定访问密钥的 Key；非己 Key（或不存在）返回 nil，处理器据此返回 403。
@@ -485,10 +480,23 @@ func (s *KeyService) FindOwnedByID(ctx context.Context, accessKeyID, keyID uint)
 
 // Historical unowned donations require an explicit ownership decision, not an
 // automatic match against an alias a new user can register.
+// 在 Go 侧用 EqualFold 比较（SQLite 的 LOWER 只处理 ASCII），与 AccessKeyService.AliasExists 口径一致。
 func (s *KeyService) UnownedDonationAliasExists(ctx context.Context, alias string) (bool, error) {
-	var count int64
-	err := s.db.WithContext(ctx).Model(&models.APIKey{}).
-		Where("is_donated = ? AND COALESCE(access_key_id, 0) = 0 AND LOWER(TRIM(alias)) = LOWER(?)", true, strings.TrimSpace(alias)).
-		Count(&count).Error
-	return count > 0, err
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		return false, nil
+	}
+	var aliases []string
+	if err := s.db.WithContext(ctx).Model(&models.APIKey{}).
+		Where("is_donated = ? AND COALESCE(access_key_id, 0) = 0", true).
+		Distinct().
+		Pluck("alias", &aliases).Error; err != nil {
+		return false, err
+	}
+	for _, existing := range aliases {
+		if strings.EqualFold(strings.TrimSpace(existing), alias) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

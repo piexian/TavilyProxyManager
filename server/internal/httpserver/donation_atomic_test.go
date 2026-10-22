@@ -15,6 +15,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"tavily-proxy/server/internal/models"
 	"tavily-proxy/server/internal/services"
 )
 
@@ -155,12 +156,13 @@ func TestHandleUpdateAccessKey_UnchangedAliasSkipsUniquenessCheck(t *testing.T) 
 	database := portalTestDB(t)
 	access := services.NewAccessKeyService(database, logger)
 	ctx := context.Background()
-	first, err := access.Create(ctx, "Default")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := access.Create(ctx, "Default"); err != nil { // 历史遗留重名
-		t.Fatal(err)
+	// 历史遗留的重名数据：服务层已拒绝新建重名，这里直接写库模拟升级前的状态。
+	first := models.AccessKey{Key: "legacy-token-1", Alias: "Default", IsActive: true}
+	second := models.AccessKey{Key: "legacy-token-2", Alias: "Default", IsActive: true}
+	for _, ak := range []*models.AccessKey{&first, &second} {
+		if err := database.Create(ak).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, err := access.Create(ctx, "Taken"); err != nil {
 		t.Fatal(err)
