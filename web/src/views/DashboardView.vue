@@ -23,7 +23,7 @@
       </n-button>
     </div>
 
-    <n-grid cols="1 s:2 m:5" responsive="screen" :x-gap="12" :y-gap="12">
+    <n-grid cols="2 m:5" responsive="screen" :x-gap="12" :y-gap="12">
       <n-gi v-for="card in metricCards" :key="card.key">
         <n-card size="small" class="metric-card" :class="`metric-card--${card.tone}`">
           <div class="metric-card__shine"></div>
@@ -744,15 +744,27 @@ onMounted(async () => {
     font-size: 13px;
   }
 
+  /* 手机端指标卡两列并排：收紧间距，数值与补充文字过长时允许换行 */
   .metric-card__header {
-    margin-bottom: 18px;
+    margin-bottom: 12px;
+    gap: 8px;
+  }
+
+  .metric-card__label {
+    letter-spacing: 0.02em;
+  }
+
+  .metric-card__value-row {
+    flex-wrap: wrap;
+    gap: 2px 8px;
   }
 
   .metric-card__icon {
-    width: 34px;
-    height: 34px;
-    border-radius: 10px;
-    font-size: 16px;
+    width: 30px;
+    height: 30px;
+    flex-shrink: 0;
+    border-radius: 8px;
+    font-size: 15px;
   }
 
   .metric-card__value {
@@ -763,8 +775,8 @@ onMounted(async () => {
     font-size: 12px;
   }
 
-  .usage-split {
-    grid-template-columns: 1fr;
+  .usage-split__item {
+    padding: 10px;
   }
 
   .usage-total {

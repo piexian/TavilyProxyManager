@@ -90,7 +90,29 @@
     </n-card>
 
     <n-card :bordered="false" class="table-card">
+      <template v-if="isMobile">
+        <MobileCardList :rows="mobileRows" :loading="loading" :row-key="rowKey">
+          <template #item="{ row }">
+            <div class="mcl-row">
+              <div class="mcl-grow"><TableCell :column="col.alias" :row="row" /></div>
+              <TableCell :column="col.is_active" :row="row" />
+            </div>
+            <TableCell :column="col.key" :row="row" />
+            <TableCell :column="col.quota" :row="row" />
+            <div class="mcl-actions"><TableCell :column="col.actions" :row="row" /></div>
+          </template>
+        </MobileCardList>
+        <n-pagination
+          v-if="items.length > pagination.pageSize"
+          v-model:page="mobilePage"
+          :page-size="pagination.pageSize"
+          :item-count="items.length"
+          simple
+          class="mcl-pager"
+        />
+      </template>
       <n-data-table
+        v-else
         :columns="columns"
         :data="items"
         :loading="loading"
@@ -267,6 +289,7 @@ import {
   NTooltip,
   useMessage,
   type DataTableColumns,
+  NPagination,
 } from "naive-ui";
 import {
   AddOutline,
@@ -282,6 +305,9 @@ import { api } from "../api/client";
 import type { KeyItem } from "../types";
 import { writeClipboardText } from "../utils/clipboard";
 import { t } from "../i18n";
+import { useMediaQuery } from "../composables/useResponsive";
+import MobileCardList from "../components/MobileCardList.vue";
+import { TableCell, columnsByKey } from "../components/TableCell";
 
 const message = useMessage();
 const items = ref<KeyItem[]>([]);
@@ -380,6 +406,24 @@ const editForm = reactive<{
 const pagination = reactive({
   pageSize: 10,
 });
+
+// 手机端用卡片列表替代需要横向滚动的表格（前端分页）
+const isMobile = useMediaQuery("(max-width: 640px)");
+const mobilePage = ref(1);
+const mobileRows = computed(() =>
+  items.value.slice(
+    (mobilePage.value - 1) * pagination.pageSize,
+    mobilePage.value * pagination.pageSize,
+  ),
+);
+watch(
+  () => items.value.length,
+  (count) => {
+    const last = Math.max(1, Math.ceil(count / pagination.pageSize));
+    if (mobilePage.value > last) mobilePage.value = last;
+  },
+);
+const col = computed(() => columnsByKey(columns));
 
 function rowKey(row: KeyItem) {
   return row.id;

@@ -12,6 +12,9 @@ import {
 import { TrashOutline } from "@vicons/ionicons5";
 import { locale, t } from "../../i18n";
 import type { KeyItem } from "../../types";
+import { useMediaQuery } from "../../composables/useResponsive";
+import MobileCardList from "../MobileCardList.vue";
+import { TableCell, columnsByKey } from "../TableCell";
 
 const props = defineProps<{
   keys: KeyItem[];
@@ -19,6 +22,9 @@ const props = defineProps<{
 }>();
 
 const emit = defineEmits<{ (e: "delete", id: number): void }>();
+
+// 手机端用卡片列表替代需要横向滚动的表格
+const isMobile = useMediaQuery("(max-width: 640px)");
 
 function usagePercent(row: KeyItem): number {
   if (!row.total_quota || row.total_quota <= 0) return 0;
@@ -108,10 +114,31 @@ const columns = computed<DataTableColumns<KeyItem>>(() => [
       ),
   },
 ]);
+
+const col = computed(() => columnsByKey(columns.value));
 </script>
 
 <template>
+  <MobileCardList
+    v-if="isMobile"
+    :rows="props.keys"
+    :loading="props.loading"
+    :row-key="(r: KeyItem) => r.id"
+  >
+    <template #item="{ row }">
+      <div class="mcl-row">
+        <div class="mcl-grow"><TableCell :column="col.alias" :row="row" /></div>
+        <div class="mcl-actions">
+          <TableCell :column="col.status" :row="row" />
+          <TableCell :column="col.actions" :row="row" />
+        </div>
+      </div>
+      <TableCell :column="col.key" :row="row" />
+      <TableCell :column="col.usage" :row="row" />
+    </template>
+  </MobileCardList>
   <n-data-table
+    v-else
     :columns="columns"
     :data="props.keys"
     :loading="props.loading"
@@ -134,11 +161,5 @@ const columns = computed<DataTableColumns<KeyItem>>(() => [
   display: flex;
   flex-direction: column;
   gap: 4px;
-}
-
-.usage-text {
-  font-size: 12px;
-  color: var(--n-text-color-3);
-  font-family: var(--n-font-family-mono);
 }
 </style>

@@ -46,7 +46,37 @@
     </div>
 
     <n-card :bordered="false" class="table-card">
+      <MobileCardList v-if="isMobile" :rows="items" :loading="loading" :row-key="rowKey">
+        <template #item="{ row }">
+          <div class="mcl-row">
+            <TableCell :column="col.created_at" :row="row" />
+            <div class="mcl-actions">
+              <TableCell :column="col.status_code" :row="row" />
+              <TableCell :column="col.actions" :row="row" />
+            </div>
+          </div>
+          <div class="mcl-row">
+            <div class="mcl-grow"><TableCell :column="col.endpoint" :row="row" /></div>
+            <TableCell :column="col.latency" :row="row" />
+          </div>
+          <div class="mcl-meta">
+            <span class="mcl-kv">
+              <span class="mcl-k">{{ columnTitle(col.key_alias) }}</span>
+              <TableCell :column="col.key_alias" :row="row" />
+            </span>
+            <span class="mcl-kv">
+              <span class="mcl-k">{{ columnTitle(col.access_key_alias) }}</span>
+              <TableCell :column="col.access_key_alias" :row="row" />
+            </span>
+            <span class="mcl-kv">
+              <span class="mcl-k">{{ columnTitle(col.client_ip) }}</span>
+              <TableCell :column="col.client_ip" :row="row" />
+            </span>
+          </div>
+        </template>
+      </MobileCardList>
       <n-data-table
+        v-else
         :columns="columns"
         :data="items"
         :loading="loading"
@@ -59,7 +89,8 @@
           v-model:page="page"
           :page-size="pageSize"
           :item-count="total"
-          show-size-picker
+          :simple="isMobile"
+          :show-size-picker="!isMobile"
           :page-sizes="[10, 20, 50, 100]"
         />
       </div>
@@ -203,6 +234,9 @@ import { api } from "../api/client";
 import type { LogItem, LogStatusCount } from "../types";
 import { writeClipboardText } from "../utils/clipboard";
 import { t } from "../i18n";
+import { useMediaQuery } from "../composables/useResponsive";
+import MobileCardList from "../components/MobileCardList.vue";
+import { TableCell, columnsByKey, columnTitle } from "../components/TableCell";
 
 const message = useMessage();
 
@@ -226,6 +260,10 @@ const statusOptions = computed<SelectOption[]>(() => [
     value: item.status_code,
   })),
 ]);
+
+// 手机端用卡片列表替代需要横向滚动的表格
+const isMobile = useMediaQuery("(max-width: 640px)");
+const col = computed(() => columnsByKey(columns));
 
 function rowKey(row: LogItem) {
   return row.id;
