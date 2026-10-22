@@ -3,19 +3,19 @@ package models
 import "time"
 
 type APIKey struct {
-	ID         uint       `gorm:"primaryKey" json:"id"`
-	Key        string     `gorm:"uniqueIndex;not null" json:"-"`
-	Alias      string     `gorm:"not null" json:"alias"`
-	TotalQuota int        `gorm:"not null;default:1000" json:"total_quota"`
-	UsedQuota  int        `gorm:"not null;default:0" json:"used_quota"`
-	IsActive   bool       `gorm:"not null;default:true" json:"is_active"`
-	IsInvalid  bool       `gorm:"not null;default:false" json:"is_invalid"`
-	IsDonated  bool       `gorm:"not null;default:false" json:"is_donated"`
+	ID         uint   `gorm:"primaryKey" json:"id"`
+	Key        string `gorm:"uniqueIndex;not null" json:"-"`
+	Alias      string `gorm:"not null" json:"alias"`
+	TotalQuota int    `gorm:"not null;default:1000" json:"total_quota"`
+	UsedQuota  int    `gorm:"not null;default:0" json:"used_quota"`
+	IsActive   bool   `gorm:"not null;default:true" json:"is_active"`
+	IsInvalid  bool   `gorm:"not null;default:false" json:"is_invalid"`
+	IsDonated  bool   `gorm:"not null;default:false" json:"is_donated"`
 	// AccessKeyID 标记该 Key 归属的捐赠者访问密钥（0 = 管理员添加/未归属）。
 	AccessKeyID uint       `gorm:"index" json:"access_key_id"`
-	LastUsedAt *time.Time `json:"last_used_at"`
-	CreatedAt  time.Time  `json:"created_at"`
-	UpdatedAt  time.Time  `json:"updated_at"`
+	LastUsedAt  *time.Time `json:"last_used_at"`
+	CreatedAt   time.Time  `json:"created_at"`
+	UpdatedAt   time.Time  `json:"updated_at"`
 }
 
 type RequestLog struct {
