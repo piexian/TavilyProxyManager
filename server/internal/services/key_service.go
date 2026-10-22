@@ -136,44 +136,37 @@ func (s *KeyService) CreateOrUpdate(ctx context.Context, key, alias string, tota
 	return &record, true, nil
 }
 
-// DonateKey creates a new key with is_active=false and is_donated=true.
-// Does not modify existing keys. Returns the record (nil if duplicate).
-func (s *KeyService) DonateKey(ctx context.Context, key, alias string) (*models.APIKey, bool, error) {
+// DonateOwnedKey 以单条 INSERT 新建已激活、已归属（accessKeyID 为 0 表示无主）的捐赠 Key，
+// 并带上校验时取得的用量与额度，不存在「已入库但未激活/无主」的中间状态。
+// 不修改已有 Key：Key 已存在时返回 (existing, false, nil)。
+func (s *KeyService) DonateOwnedKey(ctx context.Context, key, alias string, accessKeyID uint, used int, total *int) (*models.APIKey, bool, error) {
 	key = strings.TrimSpace(key)
 	alias = strings.TrimSpace(alias)
 	if alias == "" {
 		alias = "Donation"
 	}
 
-	var existing models.APIKey
-	err := s.db.WithContext(ctx).Where("`key` = ?", key).First(&existing).Error
-	if err == nil {
-		return &existing, false, nil
+	totalQuota := 1000
+	if total != nil && *total > 0 {
+		totalQuota = *total
 	}
-	if !errors.Is(err, gorm.ErrRecordNotFound) {
-		return nil, false, err
-	}
-
 	record := models.APIKey{
-		Key:        key,
-		Alias:      alias,
-		TotalQuota: 1000,
-		IsActive:   false,
-		IsDonated:  true,
+		Key:         key,
+		Alias:       alias,
+		TotalQuota:  totalQuota,
+		UsedQuota:   min(max(used, 0), totalQuota),
+		IsActive:    true,
+		IsDonated:   true,
+		AccessKeyID: accessKeyID,
 	}
 	if err := s.db.WithContext(ctx).Create(&record).Error; err != nil {
-		var check models.APIKey
-		if s.db.WithContext(ctx).Where("`key` = ?", key).First(&check).Error == nil {
-			return &check, false, nil
+		// 唯一索引冲突：被并发请求抢先入库。
+		if existing, qerr := s.QueryByKey(ctx, key); qerr == nil && existing != nil {
+			return existing, false, nil
 		}
 		return nil, false, err
 	}
 	return &record, true, nil
-}
-
-// ActivateKey sets is_active=true for the given key ID.
-func (s *KeyService) ActivateKey(ctx context.Context, id uint) error {
-	return s.db.WithContext(ctx).Model(&models.APIKey{}).Where("id = ?", id).Update("is_active", true).Error
 }
 
 // QueryByKey finds a key record by its raw key value.
@@ -209,6 +202,8 @@ type KeyUpdate struct {
 	IsActive   *bool   `json:"is_active"`
 	ResetQuota bool    `json:"reset_quota"`
 	SyncUsage  bool    `json:"sync_usage"`
+	// AccessKeyID 显式指派/改派 Key 的归属访问密钥（0 = 解除归属），用于认领升级前的无主捐赠。
+	AccessKeyID *uint `json:"access_key_id"`
 }
 
 func (s *KeyService) Update(ctx context.Context, id uint, upd KeyUpdate) (*models.APIKey, error) {
@@ -234,6 +229,9 @@ func (s *KeyService) Update(ctx context.Context, id uint, upd KeyUpdate) (*model
 	}
 	if upd.ResetQuota {
 		key.UsedQuota = 0
+	}
+	if upd.AccessKeyID != nil {
+		key.AccessKeyID = *upd.AccessKeyID
 	}
 
 	if err := s.db.WithContext(ctx).Save(&key).Error; err != nil {
@@ -425,28 +423,6 @@ func (s *KeyService) FindByID(ctx context.Context, id uint) (*models.APIKey, err
 func (s *KeyService) DeleteInvalid(ctx context.Context) (int64, error) {
 	result := s.db.WithContext(ctx).Where("is_invalid = ?", true).Delete(&models.APIKey{})
 	return result.RowsAffected, result.Error
-}
-
-// SetAccessKeyID 将一个 APIKey 归属到指定的访问密钥（捐赠者）。
-func (s *KeyService) SetAccessKeyID(ctx context.Context, id, accessKeyID uint) error {
-	return s.db.WithContext(ctx).Model(&models.APIKey{}).
-		Where("id = ?", id).Update("access_key_id", accessKeyID).Error
-}
-
-// DonateKeyForAccessKey 在捐赠者门户中新增 Key：复用 DonateKey 的校验/去重，
-// 仅当本次确为新建时才把归属写到该访问密钥（已存在的 Key 不改归属，避免抢占他人 Key）。
-func (s *KeyService) DonateKeyForAccessKey(ctx context.Context, key, alias string, accessKeyID uint) (*models.APIKey, bool, error) {
-	record, created, err := s.DonateKey(ctx, key, alias)
-	if err != nil {
-		return nil, false, err
-	}
-	if created && record != nil {
-		if err := s.SetAccessKeyID(ctx, record.ID, accessKeyID); err != nil {
-			return nil, false, err
-		}
-		record.AccessKeyID = accessKeyID
-	}
-	return record, created, nil
 }
 
 // ListByAccessKey 返回归属于指定访问密钥的全部 Key（按 id 倒序）。
