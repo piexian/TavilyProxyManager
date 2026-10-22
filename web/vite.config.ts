@@ -1,10 +1,9 @@
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
 
 const pkg = JSON.parse(
-  readFileSync(resolve(__dirname, 'package.json'), 'utf-8')
+  readFileSync(new URL('./package.json', import.meta.url), 'utf-8')
 ) as { version?: string }
 
 export default defineConfig({
