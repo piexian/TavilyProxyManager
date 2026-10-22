@@ -112,9 +112,10 @@ docker build -t my-tavily-proxy .
   - `server/internal/httpserver/` -- 路由层测试（Key 导出、Legacy API Key 兼容、日志过滤）
   - `server/internal/services/` -- 服务层测试（代理日志开关、额度同步状态机、并发控制、请求间隔）
   - 运行：`cd server && go test ./...`
-- **前端测试**：目前无自动化测试
+- **前端测试**：目前无单元测试，CI 以类型检查 + 构建作为回归门槛
 - **register 模块**：目前无自动化测试
-- **CI**：`.github/workflows/ci.yml` 在推送 main / 提 PR 时运行 `go vet` 与 `go test -race`；
+- **CI**：`.github/workflows/ci.yml` 在推送 main / 提 PR 时运行 `go vet` 与 `go test -race`，
+  以及前端 `npm ci` + `npm run build`（`vue-tsc` 类型检查 + `vite build`，Node 20，产物不上传）；
   `docker-publish.yml`（GHCR 镜像）与 `build-multi-platform.yml`（多平台二进制 + GitHub Release）仅在推送 `v*` 标签时触发
 - **发布流程**：升级 `web/package.json` 版本 -> 提交 `release vX.Y.Z` -> `git tag vX.Y.Z && git push origin vX.Y.Z`
 

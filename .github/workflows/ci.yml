@@ -1,6 +1,7 @@
 name: CI
 
-# 仅做静态检查与测试，不构建、不发布；构建与发布见 docker-publish.yml / build-multi-platform.yml（仅 v* 标签触发）。
+# 仅做检查与测试，不发布任何产物；镜像与二进制的构建发布见 docker-publish.yml / build-multi-platform.yml（仅 v* 标签触发）。
+# 前端目前没有单元测试，web 任务以类型检查 + 构建作为回归门槛（产物不上传）。
 on:
   push:
     branches: ["main"]
@@ -28,3 +29,26 @@ jobs:
 
       - name: Test
         run: go test -race -count=1 ./server/...
+
+  web:
+    name: Web type-check & build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+
+      # package.json 的 build 脚本即 vue-tsc -b && vite build：先类型检查再打包
+      - name: Type-check & build
+        working-directory: web
+        run: npm run build
