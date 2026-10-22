@@ -602,10 +602,29 @@ func (p *TavilyProxy) requestTimeout(req ProxyRequest) time.Duration {
 	return max(timeout, time.Duration(seconds*float64(time.Second))+10*time.Second)
 }
 
+// copyHeaders forwards client request headers upstream. Hop-by-hop headers
+// (RFC 7230 §6.1), including any header named by Connection, describe the
+// client's connection and must not be forwarded: Go's HTTP/2 transport rejects
+// a request carrying e.g. "Connection: upgrade", which reverse proxies such as
+// cloudflared add in front of this service.
 func copyHeaders(dst http.Header, src http.Header) {
+	connScoped := map[string]bool{}
+	for _, v := range src.Values("Connection") {
+		for _, name := range strings.Split(v, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				connScoped[strings.ToLower(name)] = true
+			}
+		}
+	}
 	for k, vv := range src {
-		switch strings.ToLower(k) {
-		case "host", "content-length":
+		lk := strings.ToLower(k)
+		switch lk {
+		case "host", "content-length",
+			"connection", "proxy-connection", "keep-alive", "proxy-authenticate",
+			"proxy-authorization", "te", "trailer", "trailers", "transfer-encoding", "upgrade":
+			continue
+		}
+		if connScoped[lk] {
 			continue
 		}
 		for _, v := range vv {
