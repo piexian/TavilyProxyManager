@@ -15,7 +15,7 @@ COPY web/ .
 RUN npm run build
 
 # Stage 2: Build the backend
-FROM golang:1.23-alpine AS backend-builder
+FROM golang:1.26.10-alpine AS backend-builder
 ARG GOPROXY=https://proxy.golang.org,direct
 ARG GOSUMDB=sum.golang.org
 ARG HTTP_PROXY
