@@ -77,7 +77,8 @@ func (s *LogService) List(ctx context.Context, page, size int, statusCode *int, 
 }
 
 func (s *LogService) StatusCodeCounts(ctx context.Context) ([]StatusCodeCount, error) {
-	var out []StatusCodeCount
+	// 非 nil 的空切片：JSON 序列化为 [] 而非 null，前端可直接 .map。
+	out := []StatusCodeCount{}
 	if err := s.db.WithContext(ctx).
 		Model(&models.RequestLog{}).
 		Select("status_code, COUNT(*) as count").

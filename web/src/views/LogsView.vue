@@ -282,7 +282,7 @@ async function loadStatusCounts() {
   statusLoading.value = true;
   try {
     const { data } = await api.get<LogStatusCount[]>("/api/logs/status-codes");
-    statusCounts.value = data;
+    statusCounts.value = data ?? [];
 
     if (
       statusCode.value !== "all" &&
