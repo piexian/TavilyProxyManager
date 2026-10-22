@@ -205,6 +205,37 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 	var lastRateLimitedLatency int64
 	upstreamReq, stripInjectedUsage := prepareUsageRequest(req)
 
+	// 记录一次未拿到上游响应的 502。用脱离取消的 ctx 写入：客户端断连/超时后
+	// 请求可能已被上游计费，日志与统计仍需留痕。
+	recordFailure := func(cause error) {
+		if !captureBodies {
+			return
+		}
+		bg := context.WithoutCancel(ctx)
+		createdAt := time.Now()
+		if loggingEnabled {
+			_ = p.logs.Create(bg, &models.RequestLog{
+				RequestID:         proxyReqID,
+				KeyUsed:           0,
+				KeyAlias:          "",
+				Endpoint:          req.Path,
+				StatusCode:        http.StatusBadGateway,
+				LatencyMs:         0,
+				RequestBody:       requestBody,
+				RequestTruncated:  requestTruncated,
+				ResponseBody:      cause.Error(),
+				ResponseTruncated: false,
+				ClientIP:          req.ClientIP,
+				AccessKeyID:       req.AccessKeyID,
+				AccessKeyAlias:    req.AccessKeyAlias,
+				CreatedAt:         createdAt,
+			})
+		}
+		if p.stats != nil {
+			_ = p.stats.RecordRequest(bg, req.Path, createdAt)
+		}
+	}
+
 	for _, key := range candidates {
 		resp, status, latencyMs, tavilyReqID, err := p.tryKey(ctx, key.ID, key.Key, upstreamReq, proxyReqID)
 
@@ -218,6 +249,7 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 			lastErr = err
 			var uncertain *upstreamResultUnknownError
 			if errors.As(err, &uncertain) || ctx.Err() != nil {
+				recordFailure(err)
 				return ProxyResponse{}, err
 			}
 			continue
@@ -401,28 +433,7 @@ func (p *TavilyProxy) Do(ctx context.Context, req ProxyRequest) (ProxyResponse, 
 			"path", req.Path,
 			"last_err", lastErr,
 		)
-		createdAt := time.Now()
-		if loggingEnabled {
-			_ = p.logs.Create(ctx, &models.RequestLog{
-				RequestID:         proxyReqID,
-				KeyUsed:           0,
-				KeyAlias:          "",
-				Endpoint:          req.Path,
-				StatusCode:        http.StatusBadGateway,
-				LatencyMs:         0,
-				RequestBody:       requestBody,
-				RequestTruncated:  requestTruncated,
-				ResponseBody:      lastErr.Error(),
-				ResponseTruncated: false,
-				ClientIP:          req.ClientIP,
-				AccessKeyID:       req.AccessKeyID,
-				AccessKeyAlias:    req.AccessKeyAlias,
-				CreatedAt:         createdAt,
-			})
-		}
-		if p.stats != nil {
-			_ = p.stats.RecordRequest(ctx, req.Path, createdAt)
-		}
+		recordFailure(lastErr)
 	} else if lastErr == nil {
 		p.logger.Error("all keys exhausted",
 			"request_id", proxyReqID,
