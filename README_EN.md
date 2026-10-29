@@ -27,7 +27,7 @@ A transparent reverse proxy for the Tavily API that aggregates multiple Tavily A
 ## 🛠️ Requirements
 
 - **Docker / Docker Compose** (Recommended deployment method, no local environment needed)
-- **Go**: `1.26.10+` & **Node.js**: `20+` (Only for manual builds)
+- **Go**: `1.27.3+` & **Node.js**: `20+` (Only for manual builds)
 
 ---
 

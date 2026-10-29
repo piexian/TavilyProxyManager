@@ -12,7 +12,7 @@
 
 ## 架构总览
 
-- **后端**：Go 1.26.10+，Gin HTTP 框架，GORM + SQLite 持久化，单二进制部署
+- **后端**：Go 1.27.3+，Gin HTTP 框架，GORM + SQLite 持久化，单二进制部署
 - **前端**：Vue 3 + TypeScript + Naive UI + ECharts，Vite 构建，编译后嵌入 Go 二进制
 - **协议**：HTTP REST API + MCP (Model Context Protocol)
 - **部署**：Docker / Docker Compose（多阶段构建），推送 `v*` 标签时由 GitHub Actions 发布到 GHCR 与 GitHub Release
@@ -61,7 +61,7 @@ graph TD
 ### 环境要求
 
 - **Docker / Docker Compose** (推荐部署方式)
-- **Go** 1.26.10+ / **Node.js** 20+ (本地开发)
+- **Go** 1.27.3+ / **Node.js** 20+ (本地开发)
 - **Python** 3.12+ / **uv** (仅 `register` 模块)
 
 ### 快速启动（Docker）
