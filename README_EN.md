@@ -1,55 +1,64 @@
-# Tavily Proxy & Management Dashboard
+# Tavily Proxy Pool & Management Dashboard
 
-简体中文 | English
+[简体中文](./README.md) | English
 
-A transparent reverse proxy for the Tavily API that aggregates multiple Tavily API Keys behind a single **Master Key**, exposing them through one unified endpoint with intelligent routing and automatic failover. It ships with a modern, visual management dashboard for managing keys, monitoring usage, and inspecting request logs.
+A reverse proxy that pools multiple Tavily API keys behind a single entry point. Clients hold a Master Key or an access key and call the REST API or MCP exactly as they would call Tavily directly; the proxy picks a key, handles invalid and exhausted keys, tracks usage, and ships with a built-in web dashboard.
 
----
-
-## 🚀 Features
-
-- **Transparent Proxy**: Seamlessly forwards requests to `https://api.tavily.com` (supports all endpoints/methods).
-- **Master Key Authentication**: Secure access via `Authorization: Bearer <MasterKey>`.
-- **Intelligent Key Pooling**:
-  - Prioritizes keys with the highest remaining quota.
-  - Randomly distributes requests among keys with equal quota to prevent rate limiting.
-- **Automatic Failover**: Automatically retries with the next available key upon receiving `401`, `429`, `432`, or `433` errors.
-- **MCP Support**: Built-in HTTP MCP (Model Context Protocol) endpoint for easy integration with AI tools (e.g., Claude, VS Code).
-- **Comprehensive Dashboard**:
-  - **Key Management**: Add, delete, and sync quotas for multiple Tavily keys.
-  - **Usage Statistics**: Visualized charts for request volume and quota consumption.
-  - **Request Logs**: Detailed logs with filtering and manual cleanup options.
-- **Automated Tasks**: Monthly quota resets and periodic log cleaning.
-- **Self-Contained**: Single binary deployment with embedded Web UI (Vite + Vue 3 + Naive UI).
+Deployed as a single Go binary with the frontend (Vue 3 + Naive UI) embedded; all data lives in one SQLite file.
 
 ---
 
-## 🛠️ Requirements
+## Features
 
-- **Docker / Docker Compose** (Recommended deployment method, no local environment needed)
-- **Go**: `1.27.3+` & **Node.js**: `20+` (Only for manual builds)
+**Proxy and key pool**
+
+- Transparently forwards every Tavily path and method (`/search`, `/extract`, `/crawl`, `/map`, `/research`, `/usage`, ...).
+- Three key selection strategies, switchable in the dashboard:
+  - `best_remaining` (default): highest remaining quota first, ties shuffled.
+  - `round_robin`: rotate through keys.
+  - `sequential_fill`: use keys up in the order they were added.
+- Automatic failover:
+  - `401`: mark the key invalid and try the next one.
+  - `432` / `433`: mark the key exhausted and try the next one.
+  - `429` / `403`: try the next key without marking this one.
+  - Non-GET requests that were sent but whose outcome is unknown are not retried, so you are never billed twice.
+- Credits are accounted per Tavily's official pricing; optional automatic quota sync uses the official `/usage` as the source of truth.
+- Optional result cache for `POST /search` with configurable TTL; cache hits cost no credits.
+
+**Access control**
+
+- **Master Key**: the admin credential with access to every API and the dashboard; generated automatically on first start.
+- **Access keys**: hand them out so others can use the proxy and MCP, with usage attributed per key. Admins can disable or delete a key, or only block its portal login; holders can reset their own key in the portal.
+- **Key donation**: the public homepage accepts Tavily keys. Each key is validated upstream before joining the pool, and the donor receives an access key.
+- **Donor portal**: sign in with an access key to view usage of your own keys, add or remove keys, and reset your access key.
+
+**MCP**
+
+- `/mcp`: Streamable HTTP endpoint. `/sse`: legacy SSE endpoint, kept for compatibility only.
+- Seven tools: `tavily-search`, `tavily-extract`, `tavily-crawl`, `tavily-map`, `tavily-research`, `tavily-research-get`, `tavily-usage`.
+- Stateless by default, so no sticky sessions are needed behind a reverse proxy.
+
+**Dashboard and automation**
+
+- Dashboard: overview and usage charts, key management (batch add, quota sync, export, purge invalid keys), access key management, request logs (filter by status code), settings.
+- Public homepage: total pool quota, connection templates for common clients, and the donation form.
+- Scheduled jobs: reset used quota on the 1st of each month, sync quota on an interval, prune logs past the retention period, and purge expired cache entries.
 
 ---
 
-## 📦 Quick Deployment (Docker)
+## Quick start
 
-Deploy directly using the GHCR image, **no local compilation required**.
-
-### 1. Using Docker Compose (Recommended)
-
-Create a `docker-compose.yml` file:
+### Docker Compose (recommended)
 
 ```yaml
 services:
   tavily-proxy:
-    image: ghcr.io/xuncv/tavilyproxymanager:latest
+    image: ghcr.io/piexian/tavilyproxymanager:latest
     container_name: tavily-proxy
     ports:
       - "8080:8080"
     environment:
-      - LISTEN_ADDR=:8080
       - DATABASE_PATH=/app/data/proxy.db
-      - TAVILY_BASE_URL=https://api.tavily.com
       - UPSTREAM_TIMEOUT=30s
     volumes:
       - ./data:/app/data
@@ -57,146 +66,200 @@ services:
     restart: unless-stopped
 ```
 
-Start the service:
-
 ```bash
-docker-compose up -d
+docker compose up -d
 ```
 
-### 2. Using Docker CLI
+Images are published for `linux/amd64` and `linux/arm64`. Besides `latest`, you can pin a version (e.g. `1.2.1`) or a minor line (e.g. `1.2`).
+
+### Docker
 
 ```bash
-docker run -d \
-  --name tavily-proxy \
+docker run -d --name tavily-proxy \
   -p 8080:8080 \
-  -v $(pwd)/data:/app/data \
+  -v "$(pwd)/data:/app/data" \
   -e DATABASE_PATH=/app/data/proxy.db \
-  ghcr.io/xuncv/tavilyproxymanager:latest
+  ghcr.io/piexian/tavilyproxymanager:latest
 ```
 
----
+### Binary
 
-## 🔑 First Run: Obtaining the Master Key
+Download the archive for your platform from [Releases](https://github.com/piexian/TavilyProxyManager/releases), extract it, and run it; the frontend is embedded:
 
-The service automatically generates a random **Master Key** during its **first startup**. This key is required to log into the dashboard and authenticate API calls.
+```bash
+DATABASE_PATH=./data/proxy.db ./tavily-proxy
+```
 
-You can retrieve it by checking the container logs:
+### Getting the Master Key
+
+On first start a Master Key is generated and written to the log:
 
 ```bash
 docker logs tavily-proxy 2>&1 | grep "master key"
+# level=INFO msg="generated master key" master_key=xxxxxxxx
 ```
 
-**Log Example:**
-`level=INFO msg="no master key found, generated a new one" key=your_generated_master_key_here`
+Open `http://localhost:8080`, click sign in, and enter the Master Key to reach the dashboard. You can view or reset the Master Key later under Settings.
 
-> **Tip**: It is highly recommended to save this key in a secure location after your first login.
+### Upgrading
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+All data lives in the mounted `data/` directory; the database schema is migrated automatically on startup.
 
 ---
 
-## 🛠️ Local Development & Manual Building
+## Usage
 
-If you need to modify the code and build it yourself:
+### Credentials
 
-1.  **Start Backend**:
-    ```bash
-    go run ./server
-    ```
-2.  **Start Frontend**:
-    ```bash
-    cd web && npm install && npm run dev
-    ```
+Every entry point accepts the same credentials:
 
-**Manual Binary Build**:
+| Credential | Grants access to |
+| :--- | :--- |
+| Master Key | Proxy, MCP, admin API (`/api/*`), dashboard |
+| Access key | Proxy, MCP, donor portal (`/api/portal/*`) |
 
-- **Windows**: `.\scripts\build_all.ps1`
-- **Linux/macOS**: `./scripts/build_all.sh`
+Pass the credential as `Authorization: Bearer <KEY>`. For older clients, the proxy endpoints also accept `api_key` / `apiKey` in the JSON body and `?api_key=` in the query string; these fields are stripped before forwarding.
 
-**Build Docker image with Buildx**:
+### REST API
 
-If you use Buildx for the first time, initialize it once:
-
-```bash
-docker buildx create --use
-```
-
-Build locally (current host architecture):
-
-```bash
-docker buildx build --load -t my-tavily-proxy .
-```
-
-Build and push multi-arch image (`amd64` + `arm64`):
-
-```bash
-docker buildx build \
-  --platform linux/amd64,linux/arm64 \
-  -t ghcr.io/<owner>/<repo>:latest \
-  --push .
-```
-
----
-
-## 📖 Usage Guide
-
-### REST API Proxy
-
-Call the proxy exactly as you would the official Tavily API, simply replacing the API base URL and using your **Master Key**:
+Call it exactly like the [official Tavily API](https://docs.tavily.com), just with the proxy's address:
 
 ```bash
 curl -X POST "http://localhost:8080/search" \
-  -H "Authorization: Bearer <MASTER_KEY>" \
+  -H "Authorization: Bearer <KEY>" \
   -H "Content-Type: application/json" \
-  -d '{"query": "Latest AI trends", "search_depth": "basic"}'
+  -d '{"query": "latest AI trends", "search_depth": "basic"}'
 ```
 
-**Compatibility Notes**:
+### MCP
 
-- Supports `{"api_key": "<MASTER_KEY>"}` or `{"apiKey": "<MASTER_KEY>"}` in JSON bodies.
-- Supports the `api_key=<MASTER_KEY>` GET parameter.
+Endpoint: `http://<host>:8080/mcp`, authenticated the same way (Bearer Master Key or access key).
 
-### MCP (Model Context Protocol)
+**Claude Code**
 
-The server provides an HTTP MCP endpoint at `http://localhost:8080/mcp`.
+```bash
+claude mcp add tavily-proxy --transport http http://<host>:8080/mcp \
+  --header "Authorization: Bearer <KEY>"
+```
 
-Stateless mode is enabled by default (`MCP_STATELESS=true`) to avoid `session not found` errors.
-If you need stateful sessions, set `MCP_STATELESS=false` and ensure your reverse proxy forwards `Mcp-Session-Id` and uses sticky sessions.
+**claude.ai / Claude Desktop (custom connector)**
 
-#### VS Code Configuration (with mcp-remote)
+Open Customize > Connectors > Add custom connector and fill it in as follows:
+
+- URL: `https://<your-domain>/mcp`
+- Authentication: **No sign-in**
+- Request headers: name `authorization`, value `Bearer <KEY>` (type `Bearer` and the space yourself)
+
+Request headers are a Claude beta feature available only to some accounts. This project does not support OAuth sign-in yet, so accounts without that option cannot connect for now. Connectors are called from Claude's servers, so the service must be reachable over public HTTPS.
+
+**VS Code** (`.vscode/mcp.json`)
 
 ```json
 {
   "servers": {
     "tavily-proxy": {
-      "command": "npx",
-      "args": [
-        "-y",
-        "mcp-remote",
-        "http://localhost:8080/mcp",
-        "--header",
-        "Authorization: Bearer YOUR_MASTER_KEY"
-      ]
+      "type": "http",
+      "url": "http://<host>:8080/mcp",
+      "headers": { "Authorization": "Bearer <KEY>" }
     }
   }
 }
 ```
 
+**Other clients that read `mcpServers`** (Cursor, etc.)
+
+```json
+{
+  "mcpServers": {
+    "tavily-proxy": {
+      "url": "http://<host>:8080/mcp",
+      "headers": { "Authorization": "Bearer <KEY>" }
+    }
+  }
+}
+```
+
+The homepage (`http://<host>:8080`) provides ready-to-copy templates for MCP, Claude Code, SSE, REST API, and AstrBot with the address already filled in.
+
+> ChatGPT custom MCP connectors only support OAuth and cannot connect yet.
+
 ---
 
-## ⚙️ Configuration (Environment Variables)
+## Configuration
 
-| Variable           | Description              | Default                  |
-| :----------------- | :----------------------- | :----------------------- |
-| `LISTEN_ADDR`      | Server listening address | `:8080`                  |
-| `DATABASE_PATH` / `DB_PATH`    | Path to SQLite database  | `./server/data/app.db`     |
-| `TAVILY_BASE_URL`  | Upstream Tavily API URL  | `https://api.tavily.com` |
-| `UPSTREAM_TIMEOUT` | Upstream request timeout | `150s`                   |
-| `MCP_STATELESS`    | Enable stateless MCP mode | `true`                  |
-| `MCP_SESSION_TTL`  | Idle timeout for MCP session | `10m`               |
-| `PORT`             | HTTP listening port, used only when `LISTEN_ADDR` is unset | `8080` |
-| `LOG_LEVEL`        | Log level                | `info`                   |
+### Environment variables
+
+| Variable | Description | Default |
+| :--- | :--- | :--- |
+| `LISTEN_ADDR` | Listen address | `:8080` |
+| `PORT` | Listen port, used only when `LISTEN_ADDR` is unset | `8080` |
+| `DATABASE_PATH` / `DB_PATH` | SQLite database path | `./server/data/app.db` |
+| `TAVILY_BASE_URL` | Upstream Tavily API base URL | `https://api.tavily.com` |
+| `UPSTREAM_TIMEOUT` | Upstream request timeout (e.g. `30s`, or plain seconds) | `150s` |
+| `MCP_STATELESS` | Run MCP in stateless mode | `true` |
+| `MCP_SESSION_TTL` | Session idle timeout in stateful mode | `10m` |
+| `LOG_DIR` | Directory for daily-rotated log files; empty means stdout only | empty |
+| `LOG_LEVEL` | `debug` / `info` / `warn` / `error` | `info` |
+
+### Dashboard settings
+
+These are stored in the database, edited on the dashboard's Settings page, and take effect immediately:
+
+| Setting | Description | Default |
+| :--- | :--- | :--- |
+| Key pool strategy | `best_remaining` / `round_robin` / `sequential_fill` | `best_remaining` |
+| Search cache | Cache `POST /search` results; TTL from 60 seconds to 7 days | Off, TTL 12 hours |
+| Auto quota sync | Periodically calibrate quota via the official `/usage`; interval, concurrency, and request spacing are configurable | Off |
+| Request logging | Whether to record request logs | On |
+| Log retention | Prune logs older than the retention period; 0 disables pruning | 30 days |
+
+### Behind a reverse proxy
+
+- The client IP is taken from `X-Forwarded-For`, trusted only from localhost and private ranges (`10/8`, `172.16/12`, `192.168/16`).
+- Keep `UPSTREAM_TIMEOUT` below the front proxy's timeout. For example, Cloudflare's default is about 100 seconds; otherwise long requests get cut off by the proxy first.
+- Only when `MCP_STATELESS=false` do you need to forward `Mcp-Session-Id` and enable sticky sessions.
+
+Health check: `GET /healthz`.
 
 ---
 
-## 📄 License
+## Development
 
-This project is licensed under the MIT License.
+Requirements: Go `1.27.3+`, Node.js `20+`.
+
+```bash
+# Backend
+go run ./server
+
+# Frontend (in another terminal; the dev server proxies API calls to the backend)
+cd web && npm install && npm run dev
+
+# Tests
+go test ./...
+```
+
+Build:
+
+```bash
+# Build and embed the frontend, output Windows and Linux binaries to build/
+./scripts/build_all.sh        # on Windows: .\scripts\build_all.ps1
+
+# Docker image (current architecture)
+docker build -t tavily-proxy .
+```
+
+Release: pushing a `v*` tag makes GitHub Actions build multi-arch images to GHCR and publish per-platform binaries to Releases.
+
+---
+
+## Acknowledgements
+
+This project is a derivative of [xuncv/TavilyProxyManager](https://github.com/xuncv/TavilyProxyManager).
+
+## License
+
+MIT
